@@ -1,0 +1,4 @@
+#! /usr/bin/env python3
+import mdh_cli
+
+mdh_cli.run()
