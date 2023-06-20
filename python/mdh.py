@@ -10,8 +10,8 @@ import requests
 import json
 import base64
 import time
+import subprocess
 from location_def import *
-
 
 
 #
@@ -33,6 +33,8 @@ def checkFileName(fileName):
 
     # if there is any path, ignore it
     fileName = os.path.basename(fileName)
+    # if there is a namespace, ignore it
+    fileName = fileName.split(":")[-1]
 
     fields = fileName.split(".")
 
@@ -257,3 +259,131 @@ def dcacheInfo(fileName=None, location="tape"):
         response.raise_for_status()
 
     return json.loads(response.text)
+
+#
+#
+#
+
+def fileJson(namespace=None, fileSpec=None, parents=None,
+             appFamily=None,appName=None,appVersion=None):
+    '''
+    Create a dictionary of the metadata of the metacat database for a file
+
+    Parameters:
+        namespace (str) : the metacat namespace (required)
+        filespec (str) : the full file spec of the file to be processed
+            (required)
+        parents (str or list(str)) : the parent files, a str of files separated
+            by commas, or as a list of file names (default=None)
+        appFamily (str) : file processing record family (default=None)
+        appName (str) : file processing record name (default=None)
+        appVersion (str) : file processing record version (default=None)
+
+    Returns:
+        info (dictionary) : the file metadata as a dictionary
+
+    Throws:
+        FileNotFoundError : for source file not found
+        ValueError : for bad file names
+        RuntimeError : could not extract metadata
+
+    '''
+
+
+    fields = checkFileName(fileSpec)
+    if fields == None :
+        raise ValueError("Invalid file name in fileSpec: "+fileSpec)
+
+    #if not os.path.exists(fileSpec) :
+    #    raise FileNotFoundError("Input file doesn't exist")
+    info = {}
+    if namespace :
+        info["namespace"] = namespace
+    info["name"] = os.path.basename(fileSpec)
+
+    mdata = {}
+    mdata["dh.dataset"] = fields[0]+"."+fields[1]+"."+fields[2]+"."+fields[3]+"."+fields[5]
+    mdata["dh.type"] = fileFamilies[fields[0]]["type"]
+    mdata["dh.status"] = "good"
+
+    mdata["fn.tier"] = fields[0]
+    mdata["fn.owner"] = fields[1]
+    mdata["fn.description"] = fields[2]
+    mdata["fn.confguration"] = fields[3]
+    mdata["fn.sequencer"] = fields[4]
+    mdata["fn.format"] = fields[5]
+    if appFamily :
+        mdata["app.family"] = appFamily
+    if appName :
+        mdata["app.name"] = appName
+    if appVersion :
+        mdata["app.version"] = appVersion
+
+    if fields[5] == "art" :
+        cmd = "artMetadata.sh "+fileSpec
+
+        result = subprocess.run(cmd,shell=True,timeout=600,capture_output=True)
+        if result.returncode != 0 :
+            print(result.stdout.decode("utf-8"))
+            print(result.stderr.decode("utf-8"))
+            raise RuntimeError("Could not extract art metadata")
+
+        mtext = result.stdout.decode("utf-8")
+        inText = False
+        for line in mtext.split("\n") :
+            #print("X"+line[0:17]+"X")
+            if line[0:21] == "GenEventCount total:" :
+                mdata["gen.count"] = int(line.split()[2])
+
+            if line[0:18] == "end RunSubrunEvent" :
+                inText = False
+            if inText :
+                ss = line.split()
+                mdata[ss[0]] = int(ss[1])
+            if line[0:20] == "start RunSubrunEvent" :
+                inText = True
+
+    stats = os.stat(fileSpec)
+    info["size"] = stats.st_size
+
+
+    enstore,dcache = fileCRC(fileSpec)
+    dcache = "{:08x}".format(dcache)
+    info["checksums"] = {"adler32" : dcache}
+
+    if parents :
+        print("parents=",parents)
+        parentList = []
+        if isinstance(parents, list):
+            for pp in parents :
+                parentList.append(os.path.basename(pp))
+        else :
+            for pp in parents.split(",") :
+                parentList.append(os.path.basename(pp))
+        info["parents"] = parentList
+
+    info["metadata"] = mdata
+
+    #print(json.dumps(info,indent=4))
+
+    return info
+
+
+#
+#    # strip the "/pnfs" from the file path to make the url
+#    url = "https://fndcadoor.fnal.gov:3880/api/v1/namespace/" \
+#          + fileSpec[5:] + "?checksum=true&locality=true"
+#
+#    token = getToken()
+#
+#    header={ 'Authorization' : "Bearer " + token }
+#
+#    response = requests.get(url,headers=header,
+#                            verify="/etc/grid-security/certificates")
+#
+#    if response.status_code == 404 :
+#        raise RuntimeError("File not found in dCache")
+#    elif response.status_code != 200 :
+#        response.raise_for_status()
+#
+#    return json.loads(response.text)

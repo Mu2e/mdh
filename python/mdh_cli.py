@@ -15,9 +15,10 @@ def helpCmd():
       mdh <command> [OPTIONS] [ARGS]
 
       commands:
-        file-crc     print crc for a file
-        file-url     print full standard path or url for a file name
-        dcache-info  print dCache database info for a file
+        file-crc      print crc for a file
+        file-url      print full standard path or url for a file name
+        dcache-info   print dCache database info for a file
+        file-json     print DH metadata for a local file
 
     help for each command:
       mdh <command> -h
@@ -132,6 +133,43 @@ def dcacheInfoCmd(args):
                     print(crc["value"])
 
 
+#
+#
+#
+
+def fileJsonCmd(args):
+
+    parser = argparse.ArgumentParser(
+        prog="mdh file-json",
+        description="Compute and print metadata for a local file",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+
+    parser.add_argument("filespec",
+                        type=str, help="full filespec of file")
+    parser.add_argument("-p","--parents", action="store",
+                        dest="parents", default=None,
+                        help="parents as a comma-separated list or the filepsec\nof a txt file which contains the parents names\n(default=None)")
+    parser.add_argument("-s","--namespace", action="store",
+                        dest="namespace", default=None,
+                        help="metacat namespace (scope)")
+    parser.add_argument("-f","--appFamily", action="store",
+                        dest="appFamily", default=None,
+                        help="appFamily string")
+    parser.add_argument("-n","--appName", action="store",
+                        dest="appName", default=None,
+                        help="appName string")
+    parser.add_argument("-v","--appVersion", action="store",
+                        dest="appVersion", default=None,
+                        help="appVersion string")
+
+    pargs = parser.parse_args(args)
+
+    info = fileJson(pargs.namespace, pargs.filespec, pargs.parents,
+                    pargs.appFamily,pargs.appName,pargs.appVersion)
+
+    print(json.dumps(info, indent=4))
+
 
 #
 #
@@ -154,5 +192,7 @@ def run(args=None):
         fileUrlCmd(args)
     elif command == "dcache-info" :
         dcacheInfoCmd(args)
+    elif command == "file-json" :
+        fileJsonCmd(args)
     else :
         print("Unknown command: ",command)
