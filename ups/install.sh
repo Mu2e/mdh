@@ -1,8 +1,9 @@
 #
 # script to make this repo into a UPS tarball.
-# asusmes the current code is correct
-# will not force the new version to be the "current" version
+# assumes the current code is the correct version
+# will not force the new version to be the ups "current" version
 # currently this ups file will setup a specific version of python
+# tarball will appear in the cwd
 #
 # One argument required:
 # $1  version, like v1_0_0 (needs to appear in ups dirs)

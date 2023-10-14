@@ -1,0 +1,18 @@
+#! /usr/bin/env python3
+import sys
+import mdh
+
+mdhc = mdh.MdhClient()
+
+print(sys.argv)
+if len(sys.argv) < 2 :
+   print("no test file given")
+   sys.exit(1)
+
+mfile = mdh.MFile(filespec=sys.argv[1])
+
+enstore, dcache = mdhc.file_crc(mfile.filespec())
+print("enstore, dcache CRC =",enstore,dcache)
+
+md = mdhc.create_metadata(mfile)
+print("metadata = ",md)
