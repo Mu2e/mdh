@@ -17,7 +17,7 @@ if ! command -v $SCRIPT 2>&1 > /dev/null ; then
     echo "Could not find $SCRIPT"
     exit 1
 fi
-OUTPUT=$( eval $SCRIPT --minsec=600 )
+OUTPUT=$( eval $SCRIPT --minsec=600 --nooidc )
 if [ $? -ne 0 ]; then
     echo "failed to renew token"
     echo "$OUTPUT"

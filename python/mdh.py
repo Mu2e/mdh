@@ -12,11 +12,16 @@ import base64
 import time
 import subprocess
 import pprint
+from datetime import datetime
 
 import gfal2
 
 from metacat.webapi import MetaCatClient
 from metacat.common.auth_client import AuthenticationError
+from metacat.webapi.webapi import AlreadyExistsError
+from metacat.webapi.webapi import NotFoundError
+
+from data_dispatcher.api import DataDispatcherClient
 
 from rucio.client import Client as RucioClient
 from rucio.client.replicaclient import ReplicaClient
@@ -407,15 +412,16 @@ class MdhClient() :
 
     def __init__(self) :
         # don't renew token or proxy too often
-        self.renew_time = 600
+        self.renew_time = 60000
         self.last_token_time = 0
         self.last_proxy_time = 0
         self.token = ""
         self.proxy = ""
         # require less than this time left in authorization before
         # attempting a re-authorized operation
-        self.auth_time_left = 600
+        self.auth_time_left = 60000
         self.metacat = MetaCatClient()
+        self.ddisp = DataDispatcherClient()
         # RucioClient reads X509 proxies when it is created, so
         # delay creation until there is a request for a Rucio action
         self.rucio = None
@@ -468,7 +474,7 @@ class MdhClient() :
             raise RuntimeError("Error checking if token is valid")
 
         token_file = result.stdout.decode("utf-8").split('\n')[-2]
-        if self.verbose > 0 :
+        if self.verbose > 1 :
             print("found token_file:",token_file)
 
         with open(token_file, 'r') as file:
@@ -503,7 +509,7 @@ class MdhClient() :
             auser, etime = self.metacat.auth_info()
             time_left = etime - ctime
             if time_left > self.auth_time_left :
-                if self.verbose > 0 :
+                if self.verbose > 1 :
                     print("time left in metacat auth:",time_left)
                 return time_left
         except AuthenticationError as e :
@@ -519,10 +525,11 @@ class MdhClient() :
         else :
             raise RuntimeError('Could not find username for metacat')
 
-        if self.verbose > 0 :
+        if self.verbose > 1 :
             print("renewing metacat auth")
         auser,etime = self.metacat.login_token(user,token)
         time_left = etime - ctime
+        self.ddisp.login_token(user,token)
 
         return time_left
 
@@ -673,14 +680,14 @@ class MdhClient() :
     #
     #
 
-    def retire_metacat_file(self, file, dnr=False):
+    def retire_metacat_file(self, file, force=False):
         '''
 
         Retire a file in the metacat database
 
         Parameters:
             mfile (str|MFile) : a file name or object containing the file name
-            dnr (bool) : (default=F) do not raise if file not
+            force (bool) : (default=F) do not raise if file not
                   available or already retired
 
         '''
@@ -738,7 +745,7 @@ class MdhClient() :
     #
     #
 
-    def dcache_info(self, file_name=None, location="tape"):
+    def query_dcache(self, file_name=None, location="tape"):
         '''
         Return a dictionary of the content of the dCache database for a file
 
@@ -780,6 +787,8 @@ class MdhClient() :
 
         header={ 'Authorization' : "Bearer " + token }
 
+        #print("file_name=",file_name)
+        #print("token=",token[0:20])
         response = requests.get(url,headers=header,
                                 verify="/etc/grid-security/certificates")
 
@@ -795,7 +804,7 @@ class MdhClient() :
     #
     #
 
-    def declare_file(self, file):
+    def declare_file(self, file, force=False):
         '''
 
         Create a file record in metacat using the information in mfile.
@@ -805,7 +814,8 @@ class MdhClient() :
         Parameters:
             mfile (MFile) : file object with name, namespace, metacat file
                 attibutes (crc and size) and mu2e metadata dictionary
-
+            force (bool) : (default=F) do not raise if the file has to be
+                          unretired to be declared
         Returns:
             catmetadata (dict) : the file catmetadata as a dictionary
 
@@ -820,21 +830,63 @@ class MdhClient() :
 
         dsdid = mfile.default_dataset_did()
 
-        print("checking metacat ds ",dsdid)
-        if not self.metacat.get_dataset(did=dsdid) :
-            print("ds not found, create it")
-            md = self.create_dataset_metadata(dsdid)
-            print(md)
-            self.metacat.create_dataset(dsdid, metadata=md)
-            #metacat.create_dataset(dsdid)
-        else :
-            print("ds found, declare file")
-            self.metacat.declare_file(did = mfile.did(),
-                                 dataset_did = dsdid,
-                                 size = mfile.catmetadata()['size'],
-                                 checksums = mfile.catmetadata()['checksums'],
-                                 parents = mfile.catmetadata().get('parents'),
-                                 metadata = mfile.metadata())
+        if self.verbose > 0 :
+            print("declaring file : "+mfile.did())
+
+        if self.dryrun :
+            # the only thing left to do is the actual declare
+            return
+
+        done = False;
+        while not done :
+            try :
+                self.metacat.declare_file(did = mfile.did(),
+                            dataset_did = dsdid,
+                            size = mfile.catmetadata()['size'],
+                            checksums = mfile.catmetadata()['checksums'],
+                            parents = mfile.catmetadata().get('parents'),
+                            metadata = mfile.metadata())
+                done = True
+            except AlreadyExistsError as e :
+                # file already exists, it may or may not be retired
+                if self.verbose > 0 :
+                    print("metacat file record already exists")
+                # if requested, unretire and update
+                if force :
+                    # need to ask if retired
+                    fd = self.metacat.get_file(did = mfile.did(),
+                          with_metadata = False, with_provenance=False)
+                    if self.verbose > 1 :
+                        print("fd = ",fd)
+                    if fd['retired'] :
+                        # attempt unretire and update
+                        if self.verbose > 0 :
+                            print("unretire and update file")
+                        self.metacat.retire_file(did = mfile.did(),
+                                                 retire=False)
+                        self.metacat.update_file(did = mfile.did(),
+                            replace = True,
+                            size = mfile.catmetadata()['size'],
+                            checksums = mfile.catmetadata()['checksums'],
+                            parents = mfile.catmetadata().get('parents'),
+                            metadata = mfile.metadata())
+                        done = True
+                    else : # file exists and was not retired
+                        if self.verbose > 0 :
+                            print("file exist and was not retired")
+                        raise
+                else : # file exists and do not force
+                    if self.verbose > 0 :
+                        print("file exists, no force requested")
+                    raise
+
+            except NotFoundError as e :
+                # expect this if the default dataset does not exist
+                if self.verbose > 0 :
+                    print("while declaring file, default dataset does not exist, will declare it")
+                # declare default dataset, force=False because we expect it DNE
+                self.create_metacat_dataset(dsdid, False)
+
 
         return
 
@@ -861,7 +913,7 @@ class MdhClient() :
 
     def create_metadata(self, mfile, parents=None,
                         appFamily=None,appName=None,appVersion=None,
-                        declare=False, ignore=False):
+                        declare=False, ignore=False, force=False):
         '''
         Create a dictionary of the catmetadata for a file
 
@@ -874,7 +926,7 @@ class MdhClient() :
             appVersion (str) : file processing record version (default=None)
             declare (bool) : if true, also declare the file in metacat
             ignore (bool) : if true, do not read genCount product
-
+            force (bool) : passed to declare_file, if that's requiested
         Returns:
             info (dictionary) : the file metadata as a dictionary
 
@@ -966,7 +1018,7 @@ class MdhClient() :
         mfile.add_catmetadata(catmetadata)
 
         if declare :
-            self.declare_file(mfile)
+            self.declare_file(mfile,force)
         return catmetadata
 
     #
@@ -1059,7 +1111,7 @@ class MdhClient() :
 
         if not adler32 :
             raise runTimeError('Secure copy requested, but CRC not found '+mfile.name())
-        dci = self.dcache_info(mfile.name(),location)
+        dci = self.query_dcache(mfile.name(),location)
 
         remoteCRC = None
         # array of dicts
@@ -1110,33 +1162,17 @@ class MdhClient() :
     #
     #
 
-    def check_dcache_file_whatisthis(self, mfile, location = 'tape'):
-        '''
-        Use gfal to check if a file exists in dCache
-
-        Parameters:
-            mfile (MFile) : a file object containing at least
-              the name
-            location (str) : location (tape (default),disk,scratch)
-        Raises:
-            RuntimeError : dcache checksum does not match local checksum
-
-        '''
-    #
-    #
-    #
-
-    def delete_dcache_file(self, file, location, dnr=False ):
+    def delete_dcache_file(self, file, location, force=False ):
         '''
         Use gfal to delete a file in dCache
 
         Parameters:
             file (str|MFile) : a file object or file name
             location (str) : location (tape, disk, scratch)
-            dnr (bool) = (default=False) Do Not Raise on 404 error
+            force (bool) = (default=False) Do Not Raise on 404 error
 
         Returns:
-            rc (int) : 0 or 404 (if dnr)
+            rc (int) : 0 or 404 (if force)
 
         '''
 
@@ -1158,7 +1194,7 @@ class MdhClient() :
                 self.ctx.unlink(url)
         except Exception as e:
             message = str(e)
-            if dnr :
+            if force :
                 if message.find("File not found") >= 0 :
                     return 404
             raise
@@ -1169,24 +1205,80 @@ class MdhClient() :
     #
     #
 
-    def create_rucio_dataset(self, dataset, dnr=False ):
+    def create_metacat_dataset(self, did, force=False) :
+        '''
+        create a new metacat dataset
+
+        Parameters:
+            did (str|MDataset) : a dataset object or dataset name
+            force (bool) = (default=False) Do Not Raise on already exists
+
+        Returns:
+            rc (int) : 0 or 1 (if force and ds exists)
+
+        '''
+
+        #print("checking metacat ds ",dsdid)
+        #if not self.metacat.get_dataset(did=dsdid) :
+
+        if isinstance(did,MDataset) :
+            ds = did
+        else :
+            ds = MDataset(did)
+
+        if self.verbose > 0 :
+            print("check/create metacat dataset",ds.did())
+
+        self.ready_metacat()
+        md = self.create_dataset_metadata(ds.did())
+        if self.verbose > 1 :
+            print("Creating metacat dataset with metadata: ")
+            print(md)
+
+        if self.dryrun :
+            return 0
+
+        try :
+            self.metacat.create_dataset(ds.did(), metadata=md)
+        except AlreadyExistsError as e :
+            if self.verbose >0 :
+                print("metacat dataset already exists :"+ds.did())
+            if force :
+                return 1
+            raise
+            #metacat.create_dataset(dsdid)
+
+        return 0
+
+    #
+    #
+    #
+
+
+    def create_rucio_dataset(self, dataset, force=False ):
         '''
         Create a Rucio dataset
 
         Parameters:
             dataset (str|MDataset) : a dataset object or dataset name
-            dnr (bool) = (default=False) Do Not Raise on already exists
+            force (bool) = (default=False) Do Not Raise on already exists
 
         Returns:
-            rc (int) : 0 or 2 for already exists (if dnr)
+            rc (int) : 0 or 2 for already exists (if force)
 
         '''
 
-        if isinstance(dataset,mDataset) :
+        if isinstance(dataset,MDataset) :
             ds = dataset
         else :
-            ds = MDataet(dataset)
+            ds = MDataset(dataset)
 
+        if self.verbose > 0 :
+            print(f"creating Rucio dataset {ds.did()}")
+
+        if self.dryrun > 0 :
+            print(f"would create Rucio dataset {ds.did()}")
+            return 0
 
         rc = 0
         try :
@@ -1194,7 +1286,7 @@ class MdhClient() :
         except DataIdentifierAlreadyExists as e:
             if self.verbose > 0 :
                 print(f"found Rucio dataset already exists {ds.did()}")
-            if dnr :
+            if force :
                 rc = 2
             else :
                 raise
@@ -1206,204 +1298,61 @@ class MdhClient() :
     #
     #
 
-    def delete_rucio_dataset(self, dataset, dnr=False ):
+    def delete_rucio_dataset(self, dataset, force=False ):
         '''
+        INCOMPLETE - no dataset delete in Rucio
+
         Delete a Rucio dataset record
 
         Parameters:
             dataset (str|MDataset) : a dataset object or dataset name
-            dnr (bool) = (default=False) Do Not Raise on already exists
+            force (bool) = (default=False) do not raise if does not exist
 
         Returns:
-            rc (int) : 0 or 2 for already exists (if dnr)
+            rc (int) : 0 or 2 for already exists (if force)
 
         '''
 
-        print("not implemetd")
+        print("delete Rucio dataset not implementd")
 
-        if isinstance(dataset,mDataset) :
-            ds = dataset
-        else :
-            ds = MDataet(dataset)
-
-
-        rc = 0
-        try :
-            self.rucio.add_dataset(scope=ds.namespace(),name=ds.name())
-        except DataIdentifierAlreadyExists as e:
-            if self.verbose > 0 :
-                print(f"found Rucio dataset already exists {ds.did()}")
-            if dnr :
-                rc = 2
-            else :
-                raise
-
-
-        return rc
-
-    #
-    #
-    #
-
-    def delete_rucio_replica(self, dataset, files, location, dnr=False ):
-        '''
-        Delete a Rucio dataset record
-
-        Parameters:
-            dataset (str|MDataset) : a dataset object or dataset name
-            files (str|list) = file names to delete replica
-            location (str) : standard location (tape, disk, scratch)
-            dnr (bool) = (default=False) Do Not Raise on file does not exist
-
-        Returns:
-            rc (int) : 0 or 2 for already exists (if dnr)
-
-        '''
-
-        if isinstance(dataset,mDataset) :
-            ds = dataset
-        else :
-            ds = MDataet(dataset)
-
-        rse = _pars.location(location,'rucio')
-        dids = [{"scope":ds.namespace(), "name":ds.name()}]
-
-        rrfiles = []
-        for rrfile in self.rucio.list_replicas(dids,rse_expression=rse) :
-            rrfiles.append(rrfile['name'])
-
-        gfiles = []
-        for file in files :
-            if isinstance(file,MFile) :
-                mf = file
-            else :
-                mf = MFile(file)
-            if mf.name() in rrfiles :
-                filed = {'scope' : mf.namespace(),
-                         'name' : mf.name() }
-                gfile.append(filed)
-
-        if self.verbose >0 or self.dryrun :
-            print(f'delete replica: {len(files)} input files,\n   {len(rrfiles)} file in locations dataset, {len(gfiles)} overlap')
-
-        if self.dryrun :
-            print("would remove {len(gfiles)} files from {location} location")
-        else :
-            self.rucio.delete_replicas(rse = rse, files = gfiles)
-
-        return
-
-    #
-    #
-    #
-
-    def create_rucio_rule(self, dataset, location=None, dnr=False ):
-        '''
-        Create a Rucio dataset+location rule
-
-        Parameters:
-            dataset (str|MDataset) : a dataset object or dataset name
-            location (str) : location (tape,disk,scratch).
-            dnr (bool) = (default=False) Do Not Raise on already exists
-
-        Returns:
-            rc (int) : 0 or 2 for already exists (if dnr)
-
-        '''
-
-        if isinstance(dataset,mDataset) :
-            ds = dataset
-        else :
-            ds = MDataet(dataset)
-
-        dids = [{"scope":ds.namespace(), "name":ds.name()}]
-        rse = _pars.location(location,'rucio')
-
-        rc = 0
-        try :
-            if self.verbose > 0 :
-                print("adding replica rule",ds.did(),rse)
-            self.rucio.add_replication_rule(dids, 1, rse)
-        except DuplicateRule as e :
-            if self.verbose > 0 :
-                print("found rule already exists ")
-            if drn :
-                return 2
-            else :
-                raise
+#        if isinstance(dataset,MDataset) :
+#            ds = dataset
+#        else :
+#            ds = MDataset(dataset)
+#
+#
+#        rc = 0
+#        try :
+#            self.rucio.add_dataset(scope=ds.namespace(),name=ds.name())
+#        except DataIdentifierAlreadyExists as e:
+#            if self.verbose > 0 :
+#                print(f"found Rucio dataset already exists {ds.did()}")
+#            if force :
+#                rc = 2
+#            else :
+#                raise
+#
+#
+        return 0
 
 
     #
     #
     #
 
-    def delete_rucio_rule(self, dataset, location=None, dnr=False ):
-        '''
-        Delete a Rucio dataset+location rule
-
-        Parameters:
-            dataset (str|MDataset) : a dataset object or dataset name
-            location (str) : location (tape,disk,scratch).
-            dnr (bool) = (default=False) Do Not Raise on does not exists
-
-        Returns:
-            rc (int) : 0 or 2 for does not exist (if dnr)
-
-        '''
-
-        if isinstance(dataset,mDataset) :
-            ds = dataset
-        else :
-            ds = MDataet(dataset)
-
-        dids = [{"scope":ds.namespace(), "name":ds.name()}]
-        rse = _pars.location(location,'rucio')
-
-
-        filters={'scope':ds.scope(), 'name': ds.name(),
-                 'rse_expression' : rse}
-
-        rules = list( self.rucio.list_replication_rules(filters) )
-        if len(rules) > 1 :
-            print(rules)
-            raise RuntimeError(f'Found {len(rules)} rules, only one expected')
-        elif len(rules) == 0 :
-            if self.verbose > 0 :
-                print("Did not find rule for {ds.did()} at {location}")
-            if dnr :
-                return 2
-            else :
-                raise RuntimeError(f'Did not find rule to delete for {ds.did()} at {location}')
-
-        rule_id = rules[0]['id']
-
-        if self.verbose > 0 :
-            print(f"Unlocking replica rule for {ds.did()} at {location}")
-        options = {'locked': False}
-        self.rucio.update_replication_rule(rule_id, options)
-
-        if self.verbose > 0 :
-            print(f"Removing replica rule for {ds.did()} at {location}")
-        self.rucio.delete_replication_rule(rule_id)
-
-    #
-    #
-    #
-
-    def locate_dataset(self, dataset, location='tape', remove=False):
+    def add_rucio_replica(self, dataset, location='tape'):
         '''
 
         Add a dCache location (tape-backed, persistent) record in
-        in the rucio database for a given file.  The file will
-        be attached to the default dataset derived from the file name.
-        If the dataset does not exist, it will be made.
+        in the rucio database for a given dataset.  If the Rucio
+        file records need to be created they will, if the dataset
+        record needs to be created, it will, and any new files
+        will be attached to the dataset.
 
         Parameters:
             dataset (str|MDataset) : dataset name or did
             location (str) : location (tape (default),disk,scratch,nersc)
-            remove (bool) : remove instead of add (default False)
         Raises :
-             RunTimeError : more than one related rule
              RunTimeError : Rucio has more files than metacat
         '''
 
@@ -1429,47 +1378,9 @@ class MdhClient() :
         rse = _pars.location(location,'rucio')
         dids = [{"scope":ds.namespace(), "name":ds.name()}]
 
-        if remove :
-
-            # remove the rule tying this dataset to this RSE
-
-            filters={'scope':ds.scope(), 'name': ds.name(),
-                     'rse_expression' : rse}
-
-            rules = list( self.rucio.list_replication_rules(filters) )
-            if len(rules) > 1 :
-                print(rules)
-                raise RuntimeError(f'Found {len(rules)} rules, only one expected')
-            rule_id = rules[0]['id']
-
-            if self.verbose > 0 :
-                print("Unlocking replica rule")
-            options = {'locked': False}
-            self.rucio.update_replication_rule(rule_id, options)
-
-            if self.verbose > 0 :
-                print("Removing replica rule")
-            self.rucio.delete_replication_rule(rule_id)
-
-        else :
-
-            # make sure Rucio dataset exists, or create it
-            # and add the right rule
-
-            try :
-                self.rucio.add_dataset(scope=ds.namespace(),name=ds.name())
-            except DataIdentifierAlreadyExists as e:
-                if self.verbose > 0 :
-                    print("found dataset already exists")
-
-            try :
-                if self.verbose > 0 :
-                    print("adding replica rule",ds.did(),rse)
-                self.rucio.add_replication_rule(dids, 1, rse)
-            except DuplicateRule as e :
-                if self.verbose > 0 :
-                    print("found rule already exists ")
-
+        # make sure Rucio dataset exists, or create it
+        # and add the right rule
+        self.create_rucio_dataset(ds,True)
 
         rfiles = []
         for rfile in self.rucio.list_files(scope=ds.namespace(),
@@ -1489,7 +1400,7 @@ class MdhClient() :
 
         if self.verbose > 0 :
             print(f"Found {nrrfiles} rucio records in this dataset with this location")
-        if nrrfiles == nfiles and not remove :
+        if nrrfiles == nfiles :
             if self.verbose > 0 :
                 print(f"Locations are complete")
             return
@@ -1504,7 +1415,6 @@ class MdhClient() :
         dids = []   # list for creating files records
         attdids = [] # list for creating attachments of files to the dataset
         rdids = [] # list for creating RSE entries for files
-        ddids = [] # list for removing RSE
         ncrec = 0
         ncrep = 0
         for mcf in self.metacat.get_dataset_files(did = ds.did()) :
@@ -1531,20 +1441,312 @@ class MdhClient() :
                 else :
                     # files which exist but need RSE added
                     rdids.append(filed)
-            else :
-                # in Rucio and in this RSE
-                ddids.append(filed)
 
 
         ncrec = len(dids)
         ncrep = len(rdids)
-        ndrep = len(ddids)
+        #ndrep = len(ddids)
 
-        if remove :
+        if ncrec > 0 :
             if self.verbose > 0 :
-                print("Removing {ndrep} files from location")
-            self.rucio.delete_replicas(rse = rse, files = ddids)
+                print(f"Creating {ncrec} new files with locations")
+            # do the bulk creation of file records
+            #self.rucio.add_dids(dids)
+            if self.dryrun :
+                print(f"would add {ncrec} new files with locations, and attach them to the dataset")
+            else :
+                self.rucio.add_replicas(rse = rse, files = dids)
+                # attach the file records to a dataset
+                self.rucio.attach_dids( scope = ds.scope(), name = ds.name(),
+                                    dids = attdids)
+        if ncrep > 0 :
+            if self.verbose > 0 :
+                print(f"Adding replica {rse} to {ncrep} files")
+            # add the replica rse to the files
+            print(rse)
+            print(rdids)
+            if self.dryrun :
+                print(f"would add {ncrep} replica {rse} records to files")
+            else :
+                self.rucio.add_replicas(rse = rse, files = rdids)
+
+
+        return
+
+
+    #
+    #
+    #
+
+    def delete_rucio_replica(self, dataset, files, location, force=False ):
+        '''
+        Delete a Rucio file replica
+
+        Parameters:
+            dataset (str|MDataset) : a dataset object or dataset name
+            files (str|list) = file names to delete replica
+            location (str) : standard location (tape, disk, scratch)
+            force (bool) = (default=False) Do Not Raise on file does not exist
+
+        Returns:
+            rc (int) : 0 or 2 for already exists (if force)
+
+        '''
+
+        if isinstance(dataset,MDataset) :
+            ds = dataset
+        else :
+            ds = MDataset(dataset)
+
+        self.ready_rucio()
+
+        rse = _pars.location(location,'rucio')
+        dids = [{"scope":ds.namespace(), "name":ds.name()}]
+
+        rrfiles = []
+        for rrfile in self.rucio.list_replicas(dids,rse_expression=rse) :
+            rrfiles.append(rrfile['name'])
+
+        gfiles = []
+        for file in files :
+            if isinstance(file,MFile) :
+                mf = file
+            else :
+                mf = MFile(file)
+            if mf.name() in rrfiles :
+                filed = {'scope' : mf.namespace(),
+                         'name' : mf.name() }
+                gfiles.append(filed)
+
+        if self.verbose >0 or self.dryrun :
+            print(f'delete replica: {len(files)} input files,\n   {len(rrfiles)} file in locations dataset, {len(gfiles)} overlap')
+
+        if self.dryrun :
+            print("would remove {len(gfiles)} files from {location} location")
+        else :
+            if self.verbose >1 :
+                print("deleting replicas ",rse,gfiles)
+            self.rucio.delete_replicas(rse = rse, files = gfiles)
+
+        return
+
+    #
+    #
+    #
+
+    def create_rucio_rule(self, dataset, location=None, force=False ):
+        '''
+        Create a Rucio dataset+location rule
+
+        Parameters:
+            dataset (str|MDataset) : a dataset object or dataset name
+            location (str) : location (tape,disk,scratch).
+            force (bool) = (default=False) Do Not Raise on already exists
+
+        Returns:
+            rc (int) : 0 or 2 for already exists (if force)
+
+        '''
+
+        if isinstance(dataset,MDataset) :
+            ds = dataset
+        else :
+            ds = MDataset(dataset)
+
+        dids = [{"scope":ds.namespace(), "name":ds.name()}]
+        rse = _pars.location(location,'rucio')
+
+        if self.dryrun :
+            print("Would create rule for "+ds.did()+" and "+rse)
+            return 0
+
+        rc = 0
+        try :
+            if self.verbose > 0 :
+                print("adding replica rule",ds.did(),rse)
+                self.rucio.add_replication_rule(dids, 1, rse)
+        except DuplicateRule as e :
+            if self.verbose > 0 :
+                print("found rule already exists ")
+            if force :
+                return 2
+            else :
+                raise
+
+
+    #
+    #
+    #
+
+    def delete_rucio_rule(self, dataset, location=None, force=False ):
+        '''
+        Delete a Rucio dataset+location rule
+
+        Parameters:
+            dataset (str|MDataset) : a dataset object or dataset name
+            location (str) : location (tape,disk,scratch).
+            force (bool) = (default=False) Do Not Raise on does not exists
+
+        Returns:
+            rc (int) : 0 or 2 for does not exist (if force)
+
+        '''
+
+        if isinstance(dataset,MDataset) :
+            ds = dataset
+        else :
+            ds = MDataset(dataset)
+
+        dids = [{"scope":ds.namespace(), "name":ds.name()}]
+        rse = _pars.location(location,'rucio')
+
+
+        filters={'scope':ds.scope(), 'name': ds.name(),
+                 'rse_expression' : rse}
+
+        rules = list( self.rucio.list_replication_rules(filters) )
+        if len(rules) > 1 :
+            print(rules)
+            raise RuntimeError(f'Found {len(rules)} rules, only one expected')
+        elif len(rules) == 0 :
+            if self.verbose > 0 :
+                print("Did not find rule for {ds.did()} at {location}")
+            if force :
+                return 2
+            else :
+                raise RuntimeError(f'Did not find rule to delete for {ds.did()} at {location}')
+
+        rule_id = rules[0]['id']
+
+        if self.verbose > 0 :
+            print(f"Unlocking replica rule for {ds.did()} at {location}")
+        options = {'locked': False}
+        if self.dryrun :
+            print(f"Would unlock rule for {ds.did()} and {rse}")
+        else :
+            self.rucio.update_replication_rule(rule_id, options)
+
+        if self.verbose > 0 :
+            print(f"Removing replica rule for {ds.did()} at {location}")
+
+        if self.dryrun :
+            print(f"Would delete rule for {ds.did()} and {rse}")
+        else :
+            self.rucio.delete_replication_rule(rule_id)
+
+    #
+    #
+    #
+
+    def locate_dataset(self, dataset, location='tape'):
+        '''
+
+        Add a dCache location (tape-backed, persistent, scratch) record in
+        in the Rucio database for a given dataset.  The file will
+        be attached to the default dataset derived from the file name.
+        If the dataset does not exist, it will be made.
+
+        Parameters:
+            dataset (str|MDataset) : dataset name or did
+            location (str) : location (tape (default),disk,scratch,nersc)
+
+        '''
+
+
+        self.add_rucio_replica(dataset,location)
+
+        if isinstance(dataset, MDataset):
+            ds = dataset
+        else :
+            ds = MDataset(dataset)
+
+
+        self.ready_metacat()
+        self.ready_rucio()
+
+        nfiles = self.metacat.get_dataset(ds.did())['file_count']
+        if self.verbose > 0 :
+            print(f"Found {nfiles} metacat files for dataset {ds.did()}")
+
+        if nfiles == 0 :
+            if self.verbose > 0 :
+                print("No files to process")
             return
+
+
+        rse = _pars.location(location,'rucio')
+        dids = [{"scope":ds.namespace(), "name":ds.name()}]
+
+        # make sure Rucio dataset exists, or create it
+        # force=True means "already exists" is a success
+        self.create_rucio_dataset(dataset=ds, force=True)
+
+        # files may or may not be be listed in Rucio, or
+        # or may or may not have the RSE attched
+        # so collect these list to determine what to do
+
+        # collect all existing files attached to this dataset
+        rfiles = []
+        for rfile in self.rucio.list_files(scope=ds.namespace(),
+                                           name=ds.name()) :
+            #print(rfile)
+            rfiles.append(rfile['name'])
+
+        nrfiles = len(rfiles)
+        if self.verbose > 0 :
+            print(f"Found {nrfiles} rucio records in this dataset")
+
+        # file listed in this dataset, already with the request RSE
+        rrfiles = []
+        for rrfile in self.rucio.list_replicas(dids,rse_expression=rse) :
+            #print(rrfile)
+            rrfiles.append(rrfile['name'])
+        nrrfiles = len(rrfiles)
+
+        if self.verbose > 0 :
+            print(f"Found {nrrfiles} rucio records in this dataset with this location")
+        if nrrfiles == nfiles :
+            if self.verbose > 0 :
+                print(f"Locations are complete")
+            return
+
+        if self.verbose > 0 :
+            print("Setting locations on Rucio files")
+
+        nrcre = 0
+        dids = []   # list for creating files records
+        attdids = [] # list for creating attachments of files to the dataset
+        rdids = [] # list for creating RSE entries for files
+        ncrec = 0
+        ncrep = 0
+        for mcf in self.metacat.get_dataset_files(did = ds.did()) :
+
+            filed = {'scope' : mcf['namespace'],
+                     'name' : mcf['name'] }
+
+            if mcf['name'] not in rrfiles :
+                # file does not have record and RSE
+
+                if mcf['name'] not in rfiles :
+                    # file does not have record
+                    if 'checksums' in mcf :
+                        adler32 = mcf['checksums'].get('adler32')
+                    else :
+                        adler32 = None
+                    filei = {'scope' : mcf['namespace'],
+                             'name' : mcf['name'],
+                             #'type' : 'file',
+                             'bytes' : mcf.get('size'),
+                             'adler32' : adler32 }
+                    dids.append(filei)
+                    attdids.append(filed)
+                else :
+                    # files which exist but need RSE added
+                    rdids.append(filed)
+
+
+        ncrec = len(dids)
+        ncrep = len(rdids)
 
         if ncrec > 0 :
             if self.verbose > 0 :
@@ -1563,6 +1765,9 @@ class MdhClient() :
             print(rdids)
             self.rucio.add_replicas(rse = rse, files = rdids)
 
+
+        # createa rule that that this dataset should be in this RSE
+        #self.create_rucio_rule(dataset=ds,location=location,force=True)
 
         return
 
@@ -1596,7 +1801,7 @@ class MdhClient() :
             print(f"processing {len(files)} files")
 
         if (dcache or replica) and not location :
-            raise runTimeError("location required for dcache or replica")
+            raise RunTimeError("location required for dcache or replica")
 
 
         for file in files :
@@ -1611,8 +1816,8 @@ class MdhClient() :
                 if self.dryrun :
                     print(f"    delete {location} replica record")
                 else :
-                    pass
-                    #self.delete_dcache_file(file,location,force)
+                    mfile = MFile(file)
+                    self.delete_rucio_replica(mfile.default_dataset(),[file],location,force)
             if catalog :
                 if self.dryrun :
                     print("    delete file catalog record")
@@ -1620,7 +1825,7 @@ class MdhClient() :
                     self.retire_metacat_file(file,force)
 
 #        if replica :
-#            
+#
 #        if isinstance(dataset, MDataset):
 #            ds = dataset
 #        else :
@@ -1784,38 +1989,101 @@ class MdhClient() :
     #
     #
 
-    def prestage_dataset(self, dataset=None):
+    def prestage_dataset(self, dataset):
         '''
 
-        NOT IMPLEMENTED
-
-        Return the full dCache file path or url for a file name
+        Use data dispatcher to prestage a dataset by requesting all files
 
         Parameters:
-            file_name (str) : the file name (any directories are stripped)
-            location (str) : location to return (tape,disk,scratch,nersc)
-            schema (str) :  the protocol of the filespec (path,http,root,dcap,sam)
-                path: '/pnfs/mu2e/.../file'
-                http: 'http://.../file'
-                root: 'root://.../file'
-                dcap: 'dcap://.../file'
-                sam: 'enstore:/pnfs/mu2e/...' (no file name)
-
-        Returns:
-            url (str) : the path or url
-
-        Raises:
-            ValueError : for invalid inputs
+            dataset (str) : the metacat dataset name
 
         '''
 
-    #    print("in fileTouch "+fileName)
-    #
-    #    with open(fileName, 'rb') as fh:
-    #        fh.read(128)
+        if isinstance(dataset,MDataset) :
+            ds = dataset
+        else :
+            ds = MDataset(dataset)
+
+        self.ready_metacat()
+
+        flist = []
+        for mcf in self.metacat.get_dataset_files(did = ds.did()) :
+            if (self.verbose > 0 or self.dryrun ) and len(flist) == 0 :
+                print("prestage_dataset retrieved first file:")
+                print(mcf)
+            flist.append(mcf['name'])
+
+        nfile = len(flist)
+        if self.verbose > 0 :
+            print(f"prestaging {ds.did()}, {nfile} files")
+
+        if self.dryrun > 0 :
+            print(f"would prestage {nfile} files")
+            return
+
+        filedl = []
+        fstatus = []
+        for fn in flist :
+            mfile = MFile(name=fn)
+            path = mfile.url() # tape path
+            path = path[5:] # strip /pnfs
+            filedl.append({'path':path,'diskLifetime':'P7D'})
+            fstatus.append({'name':mfile.name(),'staged':False})
+
+
+        split = 200
+        stage_url = "https://fndcadoor.fnal.gov:3880/api/v1/tape/stage"
+        token = self.get_token()
+        header={ 'Authorization' : "Bearer " + token }
+
+        files = []
+        for ifile,filed in enumerate(filedl) :
+            files.append(filed)
+            if (ifile > 0 and ifile%split == 0) or ifile == nfile-1 :
+                filesdd = {'files':files}
+                response = requests.post(stage_url, headers=header,
+                                         json=filesdd, verify=False)
+                files = []
+
+
+        nstaged = 0
+        while nstaged < nfile :
+            self.ready_metacat()
+            nstaged = 0
+            nunstaged = 0
+            ifile = 0
+            while ifile < nfile and nunstaged < 20 :
+                fst = fstatus[ifile]
+                if fst['staged'] :
+                    nstaged = nstaged + 1
+                else :
+                    dd = self.query_dcache(file_name=fst['name'])
+                    if "ONLINE" in dd["fileLocality"] :
+                        nstaged = nstaged + 1
+                        fst['staged'] = True
+                    else :
+                        nunstaged = nunstaged + 1
+                ifile = ifile + 1
+
+            if self.verbose :
+                nows = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                percent = int(100*nstaged/(nstaged+nunstaged))
+                print(f"{nows} {percent:3d}% staged")
+            time.sleep(100)
+
+#        project = self.ddisp.create_project(flist)
+#        if self.verbose > 0 :
+#            print("create_project returns: ",project)
+#        project_id = project['project_id']
+#        worker = 0
+#        for index in range(len(flist)) :
+#            file_info = self.ddisp.next_file(project_id,worker_id=worker)
+#            #print("file_info=",file_info)
+#            did = file_info['namespace']+":"+file_info['name']
+#            #rc = self.ddisp.file_done(project_id,did)
+#            #print("rc=",rc)
 
         return
-
 
 
     #
@@ -1933,7 +2201,7 @@ class MdhClient() :
             rstatus = "-"
         rstatus = rstatus.rjust(7)
 
-        summary=f'{status} {nfiles:7d} {rstatus} {totalb:20,d} {totalev:12,d}  {ds.did()}'
+        summary=f'{status} {nfiles:7d} {rstatus} {totalb:22,d} {totalev:15,d}  {ds.did()}'
         report['summary'] = summary
 
         return report

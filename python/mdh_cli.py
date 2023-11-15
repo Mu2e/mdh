@@ -25,11 +25,11 @@ class MdhCli() :
           commands:
             compute-crc      print crc for a file
             print-url        print full standard path or url for a file name
-            dcache-info      print dCache database info for a file
+            query-dcache     print dCache database info for a file
             create-metadata  print DH metadata for a local file
             declare-files    create metacat file record from json metadata file
             copy-files       copy files to/from/within dCache
-            locate-files     record dcache location for files in a dataset
+            locate-dataset   record dcache location for files in a dataset
             delete-files     delete files and records
             prestage-dataset move a dataset from tape to disk
             verify-dataset   check aspects of a dataset
@@ -132,10 +132,10 @@ class MdhCli() :
     #
     #
 
-    def dcache_info_cmd(self, args):
+    def query_dcache_cmd(self, args):
 
         parser = argparse.ArgumentParser(
-            prog="mdh dcache-info",
+            prog="mdh query-dcache",
             description="Print file information from the dcache database",
             formatter_class=argparse.RawTextHelpFormatter
         )
@@ -162,7 +162,7 @@ class MdhCli() :
         flist = self.mdh.names_to_files(names)
 
         for file in flist :
-            info = self.mdh.dcache_info(file,pargs.location)
+            info = self.mdh.query_dcache(file,pargs.location)
 
             if pargs.pall :
                 print(json.dumps(info, indent=4))
@@ -199,23 +199,28 @@ class MdhCli() :
         parser.add_argument("-s","--namespace", action="store",
                             dest="namespace", default=None,
                             help="metacat namespace, default=file owner field")
-        parser.add_argument("-f","--appFamily", action="store",
+        parser.add_argument("-a","--appFamily", action="store",
                             dest="appFamily", default=None,
                             help="appFamily string")
         parser.add_argument("-n","--appName", action="store",
                             dest="appName", default=None,
                             help="appName string")
-        parser.add_argument("-v","--appVersion", action="store",
+        parser.add_argument("-e","--appVersion", action="store",
                             dest="appVersion", default=None,
                             help="appVersion string")
         parser.add_argument("-d","--declare", action="store_true",
                             dest="declare", default=False,
                             help="if present, also declare file to metacat")
+        parser.add_argument("-f","--force", action="store_true",
+                            dest="force", default=False,
+                            help="if present, unretire files if needed")
         parser.add_argument("-i","--ignore", action="store_true",
                             dest="ignore", default=False,
                             help="if present, ignore GenCount product\n   (only for rare legacy files)")
 
+        self.add_verbose(parser)
         pargs = parser.parse_args(args)
+        self.mdh.set_verbose(pargs.verbose)
 
         mfile = mdh.MFile(filespec = pargs.filespec,
                           namespace = pargs.namespace)
@@ -225,7 +230,8 @@ class MdhCli() :
                                         appName=pargs.appName,
                                         appVersion=pargs.appVersion,
                                         declare=pargs.declare,
-                                        ignore=pargs.ignore)
+                                        ignore=pargs.ignore,
+                                        force=pargs.force)
 
         if not pargs.declare :
             print(json.dumps(info, indent=4))
@@ -304,10 +310,10 @@ class MdhCli() :
     #
     #
 
-    def locate_files_cmd(self, args):
+    def locate_dataset_cmd(self, args):
 
         parser = argparse.ArgumentParser(
-            prog="mdh locate-files",
+            prog="mdh locate-dataset",
             description="Add a standard dCache location to files in a metacat dataset",
             formatter_class=argparse.RawTextHelpFormatter
         )
@@ -317,17 +323,13 @@ class MdhCli() :
         parser.add_argument("-l","--location", action="store",
                             dest="location", default="tape",
                             help="standard location to use:\n  tape (default), disk, scratch")
-        parser.add_argument("-r","--remove", action="store_true",
-                            dest="remove", default=False,
-                            help="if present, remove location")
 
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
         self.mdh.set_verbose(pargs.verbose)
 
-        self.mdh.locate_files(dataset = pargs.dataset,
-                                location = pargs.location,
-                                remove = pargs.remove)
+        self.mdh.locate_dataset(dataset = pargs.dataset,
+                                location = pargs.location)
 
     #
     #
@@ -374,6 +376,7 @@ class MdhCli() :
 
         flist = self.mdh.names_to_files(names)
         self.mdh.delete_files(flist,
+                              location = pargs.location,
                               catalog = pargs.catalog,
                               dcache = pargs.dcache,
                               replica = pargs.replica,
@@ -389,16 +392,17 @@ class MdhCli() :
 
         parser = argparse.ArgumentParser(
             prog="mdh prestage-dataset",
-            description='Move a dataset from tape to disk',
+            description='Move a dataset from tape to tape-backed dCache',
             formatter_class=argparse.RawTextHelpFormatter )
 
-        parser.add_argument("dataset", nargs="+",
+        parser.add_argument("dataset", 
                             type=str, help="dataset of files to operate on")
 
+        self.add_verbose(parser)
         pargs = parser.parse_args(args)
+        self.mdh.set_verbose(pargs.verbose)
 
-        for ds in pargs.dataset :
-            self.mdh.prestage_dataset(ds)
+        self.mdh.prestage_dataset(pargs.dataset)
 
 
     #
@@ -454,16 +458,16 @@ class MdhCli() :
             self.compute_crc_cmd(args)
         elif command == "print-url" :
             self.print_url_cmd(args)
-        elif command == "dcache-info" :
-            self.dcache_info_cmd(args)
+        elif command == "query-dcache" :
+            self.query_dcache_cmd(args)
         elif command == "create-metadata" :
             self.create_metadata_cmd(args)
         elif command == "declare-files" or command == "declare-file" :
             self.declare_files_cmd(args)
         elif command == "copy-files" or command == "copy-file" :
             self.copy_files_cmd(args)
-        elif command == "locate-files" :
-            self.locate_files_cmd(args)
+        elif command == "locate-dataset" :
+            self.locate_dataset_cmd(args)
         elif command == "delete-files" :
             self.delete_files_cmd(args)
         elif command == "prestage-dataset" :
