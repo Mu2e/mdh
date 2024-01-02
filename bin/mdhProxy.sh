@@ -1,6 +1,6 @@
 #! /bin/bash
 if ! command -v voms-proxy-info 2>&1 > /dev/null ; then
-    echo "Could not find voms-proxy-info command"
+    echo -e "\nCould not find voms-proxy-info command\n"
     exit 1
 fi
 RENEW=""
@@ -25,11 +25,11 @@ if [ "$RENEW" ]; then
                 exit 1
             fi
         else
-            echo "Could not find vomsCert"
+            echo -e "\nfailed to find vomsCert script\n"
             exit 1
         fi
     else
-        echo "Could not find valid kerberos ticket"
+        echo -e "\nfailed to find valid kerberos ticket\n"
         exit 1
     fi
 fi

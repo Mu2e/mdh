@@ -153,7 +153,7 @@ class MdhCli() :
                             help="print all dCache info")
         parser.add_argument("-l","--location", action="store",
                             dest="location", default="tape",
-                            help="standard location to use: tape, disk, scratch")
+                            help="standard location to use: tape (default), disk, scratch")
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
 
@@ -250,6 +250,12 @@ class MdhCli() :
         )
 
 
+        parser.add_argument("-d","--delete", action="store_true",
+                            dest="delete", default=False,
+                            help="if present, delete json file after declaration")
+        parser.add_argument("-f","--force", action="store_true",
+                            dest="force", default=False,
+                            help="if present, unretire file if needed")
         parser.add_argument("filespec", nargs="+",
                             type=str, help="filespec for json catmetadata files\n   \"-\" means read filespecs from stdin")
 
@@ -267,10 +273,8 @@ class MdhCli() :
                 fslist.append(fs)
 
         for fs in fslist :
-            with open(fs,"r") as fp :
-                text = fp.read()
-            mfile = MFile(catmetadata=json.loads(text))
-            self.mdh.declare_file(mfile)
+            self.mdh.declare_file(file=fs, force=pargs.force,
+                                  delete=pargs.delete)
 
 
     #
@@ -293,6 +297,15 @@ class MdhCli() :
         parser.add_argument("-s","--source", action="store",
                             dest="source", default="local",
                             help="source \"local\" (default) with filespecs for input\nor  dCache location (tape, disk, scratch)")
+        parser.add_argument("-c","--check", action="store_true",
+                            dest="check", default=False,
+                            help="if present, check destination checksum")
+        parser.add_argument("-e","--effort", action="store",
+                            dest="effort", type=int, default=1,
+                            help="higher allows more retires")
+        parser.add_argument("-d","--delete", action="store_true",
+                            dest="delete", default=False,
+                            help="if present, delete source file after copy")
 
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
@@ -303,7 +316,8 @@ class MdhCli() :
 
         for file in flist :
             self.mdh.copy_file(file = file, location = pargs.location,
-                               source = pargs.source)
+                               source = pargs.source,secure=pargs.check,
+                               effort=pargs.effort,delete=pargs.delete)
 
 
     #
