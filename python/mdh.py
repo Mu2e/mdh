@@ -804,7 +804,7 @@ class MdhClient() :
     #
     #
 
-    def declare_file(self, file, force=False):
+    def declare_file(self, file, force=False, delete=False):
         '''
 
         Create a file record in metacat using the information in mfile.
@@ -812,10 +812,13 @@ class MdhClient() :
         dataset does not exist, it will also be created.
 
         Parameters:
-            mfile (MFile) : file object with name, namespace, metacat file
+            file (MFile|path) : file object with name, namespace, metacat file
                 attibutes (crc and size) and mu2e metadata dictionary
-            force (bool) : (default=F) do not raise if the file has to be
-                          unretired to be declared
+                or path to local json file containing these
+            force (bool) : (default=F) if file exists and is retired,
+                          unretire and declare
+            delete (bool) : (default=F) delete file after declaration
+
         Returns:
             catmetadata (dict) : the file catmetadata as a dictionary
 
@@ -823,8 +826,13 @@ class MdhClient() :
 
         if isinstance(file,MFile) :
             mfile = file
+            localFile = None
         else :
-            mfile = MFile(file)
+            with open(file,"r") as fp :
+                text = fp.read()
+            mfile = MFile(catmetadata=json.loads(text))
+            localFile = file
+
 
         self.ready_metacat()
 
@@ -888,7 +896,11 @@ class MdhClient() :
                 self.create_metacat_dataset(dsdid, False)
 
 
-        return
+        if delete :
+            delp = pathlib.Path(localFile)
+            delp.unlink()
+
+        return mfile.catmetadata()
 
 
     #
@@ -1026,7 +1038,7 @@ class MdhClient() :
     #
 
     def copy_file(self, file, location = 'tape', source = 'local',
-                  effort = 1, secure = False):
+                  effort = 1, secure = False, delete=False):
         '''
         Copy a local file to a standard dCache location.
         The dCache location is determined by the file name.
@@ -1037,6 +1049,7 @@ class MdhClient() :
             location (str) : location (tape (default),disk,scratch)
             effort (int) : (default=1) level of effort to make
             secure (bool) : (default=F) check the dcache result checksum
+            delete (bool) : (default=F) delete the source file after copy
         Raises:
             RuntimeError : dcache checksum does not match local checksum
 
@@ -1069,7 +1082,6 @@ class MdhClient() :
             source_url = mfile.url(location = source, schema = 'http')
 
         if location == 'local' :
-            print("DEB ",mfile.filespec(),mfile.name())
             destination_url = "file://" + mfile.filespec()
         else :
             destination_url = mfile.url(location = location, schema = 'http')
@@ -1097,31 +1109,34 @@ class MdhClient() :
 
         # if we get here, there was no error raised
 
-        if not secure :
-            return
+        if secure :
 
-        adler32 = mfile.adler32()
-        if not adler32 :
-            if source == 'local' :
-                enstore, dcache = self.compute_crc(mfile.filespec())
-                adler32 = dcache
-            else :
-                self.get_metadata(mfile)
-                adler32 = mfile.adler32()
+            adler32 = mfile.adler32()
+            if not adler32 :
+                if source == 'local' :
+                    enstore, dcache = self.compute_crc(mfile.filespec())
+                    adler32 = dcache
+                else :
+                    self.get_metadata(mfile)
+                    adler32 = mfile.adler32()
 
-        if not adler32 :
-            raise runTimeError('Secure copy requested, but CRC not found '+mfile.name())
-        dci = self.query_dcache(mfile.name(),location)
+            if not adler32 :
+                raise runTimeError('Secure copy requested, but CRC not found '+mfile.name())
+            dci = self.query_dcache(mfile.name(),location)
 
-        remoteCRC = None
-        # array of dicts
-        for crcd in dci["checksums"]:
-            if crcd['type'] == "ADLER32" :
-                remoteCRC = crcd['value']
-                break
+            remoteCRC = None
+            # array of dicts
+            for crcd in dci["checksums"]:
+                if crcd['type'] == "ADLER32" :
+                    remoteCRC = crcd['value']
+                    break
 
-        if remoteCRC != adler32 or adler32 == None :
-            raise RuntimeError('dcache checksum does not match local checksum\n' + "    " + mfile.name()+" at "+location)
+            if remoteCRC != adler32 or adler32 == None :
+                raise RuntimeError('dcache checksum does not match local checksum\n' + "    " + mfile.name()+" at "+location)
+
+
+        if delete :
+            self.ctx.unlink(source_url)
 
         return
 
