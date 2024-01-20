@@ -33,6 +33,7 @@ class MdhCli() :
             delete-files     delete files and records
             prestage-dataset move a dataset from tape to disk
             verify-dataset   check aspects of a dataset
+            upload-grid      upload a set of grid job output files
 
         help for each command:
           mdh <command> -h
@@ -214,6 +215,9 @@ class MdhCli() :
         parser.add_argument("-f","--force", action="store_true",
                             dest="force", default=False,
                             help="if present, unretire files if needed")
+        parser.add_argument("-o","--overwrite", action="store_true",
+                            dest="overwrite", default=False,
+                            help="if present, overwrite existing records, if needed")
         parser.add_argument("-i","--ignore", action="store_true",
                             dest="ignore", default=False,
                             help="if present, ignore GenCount product\n   (only for rare legacy files)")
@@ -221,7 +225,6 @@ class MdhCli() :
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
         self.mdh.set_verbose(pargs.verbose)
-
         mfile = mdh.MFile(filespec = pargs.filespec,
                           namespace = pargs.namespace)
         info = self.mdh.create_metadata(mfile,
@@ -231,7 +234,8 @@ class MdhCli() :
                                         appVersion=pargs.appVersion,
                                         declare=pargs.declare,
                                         ignore=pargs.ignore,
-                                        force=pargs.force)
+                                        force=pargs.force,
+                                        overwrite=pargs.overwrite)
 
         if not pargs.declare :
             print(json.dumps(info, indent=4))
@@ -256,6 +260,9 @@ class MdhCli() :
         parser.add_argument("-f","--force", action="store_true",
                             dest="force", default=False,
                             help="if present, unretire file if needed")
+        parser.add_argument("-o","--overwrite", action="store_true",
+                            dest="overwrite", default=False,
+                            help="if present, overwrite existing record, if needed")
         parser.add_argument("filespec", nargs="+",
                             type=str, help="filespec for json catmetadata files\n   \"-\" means read filespecs from stdin")
 
@@ -274,6 +281,7 @@ class MdhCli() :
 
         for fs in fslist :
             self.mdh.declare_file(file=fs, force=pargs.force,
+                                  overwrite=pargs.overwrite,
                                   delete=pargs.delete)
 
 
@@ -303,21 +311,26 @@ class MdhCli() :
         parser.add_argument("-e","--effort", action="store",
                             dest="effort", type=int, default=1,
                             help="higher allows more retires")
+        parser.add_argument("-o","--overwrite", action="store_true",
+                            dest="overwrite", default=False,
+                            help="if present, overwrite destination file, if needed")
         parser.add_argument("-d","--delete", action="store_true",
                             dest="delete", default=False,
                             help="if present, delete source file after copy")
 
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
+        self.mdh.set_verbose(pargs.verbose)
 
         names = self.collect_names(pargs)
 
         flist = self.mdh.names_to_files(names)
 
         for file in flist :
-            self.mdh.copy_file(file = file, location = pargs.location,
-                               source = pargs.source,secure=pargs.check,
-                               effort=pargs.effort,delete=pargs.delete)
+            self.mdh.copy_file(file = file, location=pargs.location,
+                               source=pargs.source, secure=pargs.check,
+                               effort=pargs.effort, delete=pargs.delete,
+                               overwrite=pargs.overwrite)
 
 
     #
@@ -457,6 +470,29 @@ class MdhCli() :
     #
     #
 
+    def upload_grid_cmd(self,args):
+
+        parser = argparse.ArgumentParser(
+            prog="mdh upload-grid",
+            description='copy and declare a set of grid job output files',
+            formatter_class=argparse.RawTextHelpFormatter )
+
+        parser.add_argument("manifest",
+                            type=str, help="text file with list of files to move")
+        parser.add_argument("-a","--app", action="store",
+                            dest="app", default="moo_config",
+                            help="string defining AppFamily, Name and Version.\nif \"moo_config\" (default) take from $MOO_CONFIG\nexplicit value should be AppFamily-AppName-AppVersion")
+
+        self.add_verbose(parser)
+        pargs = parser.parse_args(args)
+        self.mdh.set_verbose(pargs.verbose)
+
+        self.mdh.upload_grid(pargs.manifest)
+
+    #
+    #
+    #
+
     def run(self, args=None):
         if args == None :
             args = sys.argv[1:]
@@ -488,5 +524,7 @@ class MdhCli() :
             self.prestage_dataset_cmd(args)
         elif command == "verify-dataset" :
             self.verify_dataset_cmd(args)
+        elif command == "upload-grid" :
+            self.upload_grid_cmd(args)
         else :
             print("Unknown command: ",command)
