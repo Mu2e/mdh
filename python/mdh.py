@@ -71,13 +71,13 @@ class MParameters :
         self.locs = {
             "tape" :    { "prefix":"/pnfs/mu2e/tape",
                           "sam":"enstore",
-                          "rucio":"FNAL_ENSTORE"},
+                          "rucio":"FNAL_DCACHE_TAPE"},
             "disk" :    { "prefix":"/pnfs/mu2e/persistent/datasets",
                           "sam":"dcache",
                           "rucio":"FNAL_DCACHE_PERSISTENT"},
             "scratch" : { "prefix":"/pnfs/mu2e/scratch/datasets",
                           "sam":"dcache",
-                          "rucio":"FNAL_DCACHE_SCRATCH"},
+                          "rucio":"FNAL_SCRATCH"},
             "nersc" :   { "prefix":"/global/cfs/cdirs/m3249/datasets",
                           "sam":"nersc",
                           "rucio":""}
@@ -180,6 +180,16 @@ class MParameters :
 
         return
 
+    def get_username(self):
+        if 'GRID_USER' in os.environ :
+            user = os.environ['GRID_USER']
+        elif 'USER' in os.environ :
+            user = os.environ['USER']
+        else :
+            raise RuntimeError('Could not find username')
+        return user
+
+
 #
 # create the single global instance of MParameters
 #
@@ -275,7 +285,7 @@ class MDataset :
 #
 class MFile :
     def __init__(self, name = None, namespace = None,
-                 localpath = None, filespec = None, catmetadata = None) :
+                 filespec = None, catmetadata = None) :
         if name :
             if ':' in name :
                 self.fn = name.split(':')[1]
@@ -296,20 +306,17 @@ class MFile :
             self.ns = catmetadata['namespace']
         elif self.fn :
             # default namespace is the owner field of the file name
-            self.ns = self.fn.split('.')[1]
+            aa = self.fn.split('.')
+            if len(aa) == 6 :  # if standard file name
+                self.ns = aa[1]
+            else :
+                self.ns = _pars.get_username()
 
-        if localpath :
-            self.lp = localpath
-        elif filespec :
-            self.lp = os.path.dirname(filespec)
-            if not self.lp :
-                self.lp = os.getcwd()
-        else :
-            self.lp = os.getcwd()
+        if filespec :
+            self.fs = os.path.abspath(filespec)
 
         self.catmd = catmetadata
 
-        #self.check_file_name(self.fn)
         _pars.check_did(self.did())
 
         return
@@ -323,6 +330,8 @@ class MFile :
         return self.ns
     def did(self) :
         return self.ns+':'+self.fn
+    def set_name(self,newname) :
+        self.fn = newname
 
     def tier(self) :
         return self.fn.split('.')[0]
@@ -336,6 +345,8 @@ class MFile :
         return self.fn.split('.')[4]
     def format(self) :
         return self.fn.split('.')[5]
+    def extension(self) :
+        return self.fn.split('.')[-1]
 
     def user_type(self) :
         if self.owner() == "mu2e" :
@@ -343,13 +354,8 @@ class MFile :
         else :
             return "user"
 
-    def localpath(self) :
-        return self.lp
     def filespec(self) :
-        if self.localpath() :
-            return self.localpath() + '/' + self.name()
-        else :
-            return self.name()
+        return self.fs
     def catmetadata(self) :
         return self.catmd
     def metadata(self) :
@@ -528,12 +534,7 @@ class MdhClient() :
 
         token = self.get_token()
 
-        if 'GRID_USER' in os.environ :
-            user = os.environ['GRID_USER']
-        elif 'USER' in os.environ :
-            user = os.environ['USER']
-        else :
-            raise RuntimeError('Could not find username for metacat')
+        user = _pars.get_username()
 
         if self.verbose > 1 :
             print("renewing metacat auth")
@@ -644,7 +645,7 @@ class MdhClient() :
             elif isinstance(item,MDataset) :
                 ds = item
             elif self.is_file(item) :
-                flist.append(item)
+                flist.append(os.path.basename(item))
             else :
                 ds = MDataset(item,standard=False)
 
@@ -708,7 +709,7 @@ class MdhClient() :
 
         self.ready_metacat()
         if self.verbose > 1 :
-            print("retiring"+mf.did())
+            print("retiring "+mf.did())
 
         # retire file does not throw if file is already retired
         self.metacat.retire_file(did=mf.did())
@@ -784,7 +785,7 @@ class MdhClient() :
         if file_name.find("/") == -1 :
             mf = MFile(file_name)
         else :
-            mf = MFile(localpath=file_name)
+            mf = MFile(filespec=file_name)
         file_spec = mf.url(location)
 
         # strip the "/pnfs" from the file path to make the url
@@ -958,7 +959,7 @@ class MdhClient() :
     #
     #
 
-    def create_metadata(self, mfile, parents=None,
+    def create_metadata(self, mfile, parents=None, rename_seq = False,
                         appFamily=None,appName=None,appVersion=None,
                         declare=False, ignore=False,
                         force=False, overwrite=False):
@@ -969,6 +970,7 @@ class MdhClient() :
             mfile (MFile) : the file to be processed, must include filespec
             parents (str or list(str)) : the parent files, a str of files separated
                 by commas, or as a list of 'did' file names (default=None)
+            rename_seq = rename sequencer to output from art metadata
             appFamily (str) : file processing record family (default=None)
             appName (str) : file processing record name (default=None)
             appVersion (str) : file processing record version (default=None)
@@ -988,30 +990,8 @@ class MdhClient() :
 
         # general metacat metadata, also called "attributes"
         catmetadata = {}
-
-        catmetadata["name"] = mfile.name()
-        catmetadata["namespace"] = mfile.namespace()
-
-        # mu2e custom metadata
-        metadata = {}
-        metadata["dh.dataset"] = mfile.default_dataset()
-        metadata["dh.type"] = _pars.file_family(mfile.tier(),"type")
-        metadata["dh.status"] = "good"
-
-        metadata["fn.tier"] = mfile.tier()
-        metadata["fn.owner"] = mfile.owner()
-        metadata["fn.description"] = mfile.description()
-        metadata["fn.confguration"] = mfile.configuration()
-        metadata["fn.sequencer"] = mfile.sequencer()
-        metadata["fn.format"] = mfile.format()
-        if appFamily :
-            metadata["app.family"] = appFamily
-        if appName :
-            metadata["app.name"] = appName
-        if appVersion :
-            metadata["app.version"] = appVersion
-
-        if mfile.format() == "art" :
+        artmetadata = {}
+        if mfile.extension() == "art" :
             cmd = "artMetadata.sh " + mfile.filespec() + \
                   " " + _pars.file_family(mfile.tier(),"type")
 
@@ -1026,7 +1006,7 @@ class MdhClient() :
             inText = False
             for line in mtext.split("\n") :
                 if line[0:21] == "GenEventCount total:" :
-                    metadata["gen.count"] = int(line.split()[2])
+                    artmetadata["gen.count"] = int(line.split()[2])
 
                 if line[0:18] == "end RunSubrunEvent" :
                     inText = False
@@ -1034,16 +1014,49 @@ class MdhClient() :
                     ss = line.split()
                     if ss[0]=='rse.runs' :
                         srlist = [ int(sr) for sr in ss[1:] ]
-                        metadata[ss[0]] = srlist
+                        artmetadata[ss[0]] = srlist
                     else :
-                        metadata[ss[0]] = int(ss[1])
+                        artmetadata[ss[0]] = int(ss[1])
                 if line[0:20] == "start RunSubrunEvent" :
                     inText = True
 
-        stats = os.stat(mfile.filespec())
-        catmetadata["size"] = stats.st_size
+        if rename_seq :
+            if not artmetadata :
+                raise RunTimeError("Rename requested but no art metadata")
+            aa = mfile.name().split(".")
+            run = int(artmetadata["rs.first_run"])
+            subrun = int(artmetadata["rs.first_subrun"])
+            seq = ".{:06d}_{:06d}.".format(run,subrun)
+            newname = aa[0]+"."+aa[1]+"."+aa[2]+"."+aa[3]+seq+aa[5]
+            mfile.set_name(newname)
 
+        catmetadata["name"] = mfile.name()
+        catmetadata["namespace"] = mfile.namespace()
+
+        # mu2e custom metadata
+        metadata = {}
+        metadata["dh.dataset"] = mfile.default_dataset()
+        metadata["dh.type"] = _pars.file_family(mfile.tier(),"type")
+        metadata["dh.status"] = "good"
+
+        metadata["fn.tier"] = mfile.tier()
+        metadata["fn.owner"] = mfile.owner()
+        metadata["fn.description"] = mfile.description()
+        metadata["fn.configuration"] = mfile.configuration()
+        metadata["fn.sequencer"] = mfile.sequencer()
+        metadata["fn.format"] = mfile.format()
+        if appFamily :
+            metadata["app.family"] = appFamily
+        if appName :
+            metadata["app.name"] = appName
+        if appVersion :
+            metadata["app.version"] = appVersion
+
+        metadata.update(artmetadata)
+
+        stats = os.stat(mfile.filespec())
         enstore,dcache = self.compute_crc(mfile.filespec())
+        catmetadata["size"] = stats.st_size
         catmetadata['checksums'] = {"adler32" : dcache}
 
         if parents :
@@ -1068,6 +1081,7 @@ class MdhClient() :
 
         if declare :
             self.declare_file(mfile,force=force,overwrite=overwrite)
+
         return catmetadata
 
     #
@@ -2012,20 +2026,59 @@ class MdhClient() :
                     f.write(line)
                     line = jf.readline()
         return
+
+
     #
     #
     #
 
-    def upload_grid(self, manifest, app=None):
+    def upload_grid_tagclean(self, mfile):
+        '''
+        Look for files from a previous upload attempt and retire them
+        The files will have the given name, but with an earlier
+        time stamp appended to the sequencer
+
+        '''
+        #self.metacat.retire_metacat_file(self, file, force=False):
+
+        did = mfile.default_dataset_did()
+        # the file here will be the new tagged name t.o.d.c.s-tag.e
+        # so extract the sequencer before the tag
+        seq = '-'.join(mfile.sequencer().split('-')[0:-1])
+        query = 'files from '+did+  \
+          ' where fn.sequencer ~ "'+seq+'-"'
+        if self.verbose > 0 :
+            print("querying old tag files ",query)
+        flist = self.metacat.query(query)
+        for ff in flist:
+            odid = ff['namespace']+':'+ff['name']
+            if self.verbose > 0 :
+                print("Retiring old tag file ",odid)
+            self.metacat.retire_file(did=odid)
+
+#         cmd = self.metacat.get_file(name=mfile.name(),
+#                                    namespace=mfile.namespace(),
+#                                    with_metadata = True,
+#                                    with_provenance=False,
+#                                    with_datasets=False)
+
+        return
+
+    #
+    #
+    #
+
+    def upload_grid(self, manifest, app=None, mode="overwrite"):
         '''
 
         NOT IMPLEMENTED
 
+        rows in the manifest or file to upload:
 
         localfile , rse , parents , json , newname
 
         lines that start with "#" are comments and ignored
-        if localpath is empty and rename is *.log, then create
+        if localfile is empty and rename is *.log, then create
         log file out of condor logs (recommended)
         log files should be last in the list to capture as much
         as possible.
@@ -2055,11 +2108,14 @@ class MdhClient() :
             appName = config.split("-")[0]
             appVersion = "-".join(config.split("-")[1:])
 
+        timestr = str(int(time.time()))
+
         if self.verbose > 0 :
             print("  manifest = ", manifest)
             print("  appFamily = ", appFamily)
             print("  appName = ", appName)
             print("  appVersion = ", appVersion)
+            print("  time_tag = ", timestr)
 
         self.ready_metacat()
 
@@ -2070,6 +2126,7 @@ class MdhClient() :
                 if line[0] == '#':
                     line = fman.readline()
                     continue
+
                 if self.verbose > 0 :
                     print('['+time.ctime()+'] Starting "'+line+'"')
 
@@ -2087,9 +2144,12 @@ class MdhClient() :
                     jsonfile = aa[3].strip()
                 else :
                     jsonfile = None
+                newname = aa[0].strip()
                 if len(aa) > 4 :
                     newname = aa[4].strip()
 
+                # log file trigger
+                isLogFile = False
                 if not localfile :
                     newext = newname.split('.')[-1]
                     if newext == 'log' :
@@ -2099,15 +2159,35 @@ class MdhClient() :
                             print('['+time.ctime()+'] Creating log file')
                         self.upload_grid_log(newname)
                         localfile = newname
+                        isLogFile = True
                     else :
                         raise runTimeError('local file not found in line "'+line+'"')
                 else :
                     if not os.path.exists(localfile) :
                         raise runTimeError('local file not found in line "'+line+'"')
 
+                if mode == "tag" or mode == "tagclean" or isLogFile :
+                    # files gain a time stamp at end of sequencer
+                    # log files always do
+                    aa = newname.split(".")
+                    aa[4] = aa[4]+"-"+timestr
+                    newname = ".".join(aa)
+
+                # mv the file if it needs to be renamed
+                if newname :
+                    if jsonfile :
+                        raise RunTimeError("Request for file rename but json file provided (inconsistent)")
+                    fs = os.path.abspath(localfile)
+                    fd = os.path.dirname(fs)
+                    newlocalfile = fd+"/"+newname
+                    os.rename(localfile,newlocalfile)
+                    localfile = newlocalfile
+
+                if not os.path.exists(localfile) :
+                    raise runTimeError('local file not found in line "'+line+'"')
                 mfile = MFile(filespec=localfile)
 
-                # localfile exists, get metadata
+                # at this point, localfile exists and renamed, get metadata
                 if jsonfile :
                     # if json is provided, read metadata
                     if not os.path.exists(jsonfile) :
@@ -2124,17 +2204,29 @@ class MdhClient() :
 
                 mfile.add_catmetadata(catmd)
 
+                if mode == "tagclean" and not isLogFile :
+                    # remove earlier files with different time tags
+                    # we keep all previous log files
+                    self.upload_grid_tagclean(mfile)
+
                 # copy file, with forced overwrites
                 if self.verbose > 0 :
                     print('['+time.ctime()+'] Starting copy '+mfile.did())
-                self.copy_file(mfile, location=dest, source='local',
-                    effort=3, secure=True, delete=False, overwrite=True)
 
-                # declare file, with forced overwrites
+                # whether output file can be overwritten
+                ow = False
+                if mode=="overwrite" :
+                    ow = True
+
+                self.copy_file(mfile, location=dest, source='local',
+                    effort=3, secure=True, delete=False, overwrite=ow)
+
                 if self.verbose > 0 :
                     print('['+time.ctime()+'] Starting declare '+mfile.did())
-                self.declare_file(mfile,force=True, delete=False,
-                                  overwrite=True)
+
+                # declare file, with overwrites set by mode
+                self.declare_file(mfile,force=ow, delete=False,
+                                  overwrite=ow)
 
                 # repeat with the next line in the file
                 line = fman.readline()

@@ -125,7 +125,7 @@ class MdhCli() :
         flist = self.mdh.names_to_files(names)
 
         for file in flist :
-            mf = mdh.MFile(file)
+            mf = mdh.MFile(name=file)
             url = mf.url(pargs.location,pargs.schema)
             print(url)
 
@@ -200,6 +200,9 @@ class MdhCli() :
         parser.add_argument("-s","--namespace", action="store",
                             dest="namespace", default=None,
                             help="metacat namespace, default=file owner field")
+        parser.add_argument("-r","--rename_seq", action="store_true",
+                            dest="rename_seq", default=False,
+                            help="if present, find new sequencer (art only)")
         parser.add_argument("-a","--appFamily", action="store",
                             dest="appFamily", default=None,
                             help="appFamily string")
@@ -229,6 +232,7 @@ class MdhCli() :
                           namespace = pargs.namespace)
         info = self.mdh.create_metadata(mfile,
                                         parents=pargs.parents,
+                                        rename_seq=pargs.rename_seq,
                                         appFamily=pargs.appFamily,
                                         appName=pargs.appName,
                                         appVersion=pargs.appVersion,
@@ -398,7 +402,6 @@ class MdhCli() :
         self.mdh.set_verbose(pargs.verbose)
         self.mdh.set_dryrun(pargs.dryrun)
 
-        print(pargs.verbose,pargs.dryrun)
         names = self.collect_names(pargs)
 
         flist = self.mdh.names_to_files(names)
@@ -422,7 +425,7 @@ class MdhCli() :
             description='Move a dataset from tape to tape-backed dCache',
             formatter_class=argparse.RawTextHelpFormatter )
 
-        parser.add_argument("dataset", 
+        parser.add_argument("dataset",
                             type=str, help="dataset of files to operate on")
 
         self.add_verbose(parser)
@@ -479,6 +482,9 @@ class MdhCli() :
 
         parser.add_argument("manifest",
                             type=str, help="text file with list of files to move")
+        parser.add_argument("-m","--mode", action="store",
+                            dest="mode", default="overwrite",
+                            help="output method: overwrite (default), tag, tagclean")
         parser.add_argument("-a","--app", action="store",
                             dest="app", default="moo_config",
                             help="string defining AppFamily, Name and Version.\nif \"moo_config\" (default) take from $MOO_CONFIG\nexplicit value should be AppFamily-AppName-AppVersion")
@@ -487,7 +493,9 @@ class MdhCli() :
         pargs = parser.parse_args(args)
         self.mdh.set_verbose(pargs.verbose)
 
-        self.mdh.upload_grid(pargs.manifest)
+        self.mdh.upload_grid(manifest=pargs.manifest,
+                             mode=pargs.mode,
+                             app=pargs.app)
 
     #
     #
