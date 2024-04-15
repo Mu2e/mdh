@@ -1891,15 +1891,14 @@ class MdhClient() :
         report = {}
         report['dataset'] = ds.did()
 
-        nfiles = dd["file_count"]
-        report['metacat_nfiles'] = nfiles
-
         # this is running the file list generator once
         mfile = None
+        nfiles = 0
         totalb = 0
         totalev = 0
         for fi in self.metacat.get_dataset_files(did = ds.did(),
                                                  with_metadata=True) :
+            nfiles = nfiles + 1
             # example file
             if not mfile :
                 mfile = MFile(namespace=fi['namespace'],name=fi['name'])
@@ -1910,13 +1909,18 @@ class MdhClient() :
                 if 'rse.nevent' in md :
                     totalev = totalev + md['rse.nevent']
 
+        report['metacat_nfiles'] = nfiles
+
         report['total_bytes'] = totalb
         report['total_events'] = totalev
+        if mfile :
+            report['example_file'] = mfile.did()
+        else :
+            report['example_file'] = None
 
         if self.verbose > 0 :
-            print("Example file:",mfile.did())
+            print("Example file:",report['example_file'])
 
-        report['example_file'] = mfile.did()
 
         nrfiles = 0
         rexists = True
@@ -1929,13 +1933,12 @@ class MdhClient() :
 
         report['rucio_nfiles'] = nrfiles
 
-        dids = [{"scope":mfile.namespace(), "name":mfile.name()}]
-
         if self.verbose > 0 :
             print("Checking locations in Rucio")
 
         rlocs = []
         if rexists :
+            dids = [{"scope":mfile.namespace(), "name":mfile.name()}]
             for rr in self.rucio.list_replicas(dids=dids) :
                 for rse in rr['rses'].keys() :
                     rlocs.append(_pars.loc_from_rse(rse))
@@ -1951,7 +1954,9 @@ class MdhClient() :
         for loc in ["tape","disk","scratch"] :
             if loc in rlocs :
                 status = status + loc[0].upper()
-            exists = self.check_dcache_file(mfile,loc)
+            exists = False
+            if mfile :
+                exists = self.check_dcache_file(mfile,loc)
             if exists :
                 if self.verbose > 0 :
                     print("exists in "+loc)
