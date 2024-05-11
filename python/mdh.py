@@ -423,14 +423,14 @@ class MdhClient() :
 
     def __init__(self) :
         # don't renew token or proxy too often
-        self.renew_time = 600
+        self.renew_time = 1500
         self.last_token_time = 0
         self.last_proxy_time = 0
         self.token = ""
         self.proxy = ""
         # require less than this time left in authorization before
         # attempting a re-authorized operation
-        self.auth_renew_time = 600
+        self.auth_renew_time = 1500
         self.auth_expire_time = 0
         self.metacat = MetaCatClient()
         self.ddisp = DataDispatcherClient()
@@ -454,6 +454,9 @@ class MdhClient() :
             return True
         else :
             return False
+
+    def chunker(self, seq, size):
+        return (seq[pos:pos + size] for pos in range(0, len(seq), size))
 
     #
     #
@@ -538,10 +541,13 @@ class MdhClient() :
 
         if self.verbose > 1 :
             print("renewing metacat auth")
+        # take JWT token and create new metacat auth token on auth server
         auser,etime = self.metacat.login_token(user,token)
         self.auth_expire_time = etime
         time_left = etime - ctime
         self.ddisp.login_token(user,token)
+        # save metacat auth token in token library (~/.token_library)
+        self.metacat.TokenLib.save_tokens()
 
         return time_left
 
@@ -1137,7 +1143,7 @@ class MdhClient() :
             source_url = mfile.url(location = source, schema = 'http')
 
         if location == 'local' :
-            destination_url = "file://" + mfile.filespec()
+            destination_url = "file://" + os.getcwd() + "/" + mfile.name()
         else :
             destination_url = mfile.url(location = location, schema = 'http')
 
@@ -1443,29 +1449,46 @@ class MdhClient() :
         dids = [{"scope":ds.namespace(), "name":ds.name()}]
 
         # make sure Rucio dataset exists, or create it
-        # and add the right rule
         self.create_rucio_dataset(ds,True)
 
         # collect all existing files attached to this dataset
         rfiles = []
+        rfiles2 = [] # collect them rucio format
         for rfile in self.rucio.list_files(scope=ds.namespace(),
                                            name=ds.name()) :
-            #print(rfile)
             rfiles.append(rfile['name'])
+            rfiles2.append({'scope' : ds.namespace() ,'name' : rfile['name']})
 
         nrfiles = len(rfiles)
         if self.verbose > 0 :
             print(f"Found {nrfiles} rucio records in this dataset")
 
         # files listed in this dataset, already with the request RSE
+        # we want to simply call list_replicas with a dataset name,
+        # but that has a bug so we need to call it with each file name
         rrfiles = []
-        for rrfile in self.rucio.list_replicas(dids,rse_expression=rse) :
-            #print(rrfile)
-            rrfiles.append(rrfile['name'])
+        for split in self.chunker(rfiles2,1000):
+            tempa = []
+            qmore = True
+            itry = 0
+            # protection againt unstable Rucio server
+            while qmore and itry < 5 :
+                itry = itry + 1
+                tempa.clear()
+                try :
+                    for rrfile in self.rucio.list_replicas(split,rse_expression=rse) :
+                        if rrfile['rses'] != {} : # did not match rse
+                            tempa.append(rrfile['name'])
+                    qmore = False
+                except Exception as e :
+                    print(f"caught list_replicas exception, itry={itry}",flush=True)
+
+            rrfiles.extend(tempa)
+
         nrrfiles = len(rrfiles)
 
         if self.verbose > 0 :
-            print(f"Found {nrrfiles} rucio records in this dataset with this location")
+            print(f"Found {nrrfiles} rucio records in this dataset with location {location}")
         if nrrfiles == nfiles :
             if self.verbose > 0 :
                 print(f"Locations are complete")
@@ -1489,52 +1512,51 @@ class MdhClient() :
                      'name' : mcf['name'] }
 
             if mcf['name'] not in rrfiles :
-                # file does not have record and RSE
+                # file does not have replica for this RSE
+
+                if 'checksums' in mcf :
+                    adler32 = mcf['checksums'].get('adler32')
+                if not adler32 :
+                    raise RuntimeError('File missing adler32 checksum required by Rucio : '+mcf['name'])
+                filei = {'scope' : mcf['namespace'],
+                         'name' : mcf['name'],
+                         'bytes' : mcf.get('size'),
+                         'adler32' : adler32 }
 
                 if mcf['name'] not in rfiles :
                     # file does not have record
-                    if 'checksums' in mcf :
-                        adler32 = mcf['checksums'].get('adler32')
-                    else :
-                        adler32 = None
-                    filei = {'scope' : mcf['namespace'],
-                             'name' : mcf['name'],
-                             #'type' : 'file',
-                             'bytes' : mcf.get('size'),
-                             'adler32' : adler32 }
-                    dids.append(filei)
-                    attdids.append(filed)
+                    dids.append(filei) # files to create
+                    attdids.append(filed) # and to append to dataset
                 else :
                     # files which exist but need RSE added
-                    rdids.append(filed)
+                    rdids.append(filei)
 
 
         ncrec = len(dids)
         ncrep = len(rdids)
-        #ndrep = len(ddids)
 
         if ncrec > 0 :
             if self.verbose > 0 :
                 print(f"Creating {ncrec} new files with locations")
             # do the bulk creation of file records
-            #self.rucio.add_dids(dids)
             if self.dryrun :
                 print(f"would add {ncrec} new files with locations, and attach them to the dataset")
             else :
-                self.rucio.add_replicas(rse = rse, files = dids)
+                for split in self.chunker(dids,500):
+                    self.rucio.add_replicas(rse = rse, files = split)
                 # attach the file records to a dataset
-                self.rucio.attach_dids( scope = ds.scope(), name = ds.name(),
-                                    dids = attdids)
+                for split in self.chunker(attdids,500):
+                    self.rucio.attach_dids( scope = ds.scope(),
+                                            name = ds.name(),
+                                            dids = split)
         if ncrep > 0 :
             if self.verbose > 0 :
                 print(f"Adding replica {rse} to {ncrep} files")
-            # add the replica rse to the files
-            print(rse)
-            print(rdids)
             if self.dryrun :
                 print(f"would add {ncrep} replica {rse} records to files")
             else :
-                self.rucio.add_replicas(rse = rse, files = rdids)
+                for split in self.chunker(rdids,500):
+                    self.rucio.add_replicas(rse = rse, files = split)
 
 
         return
@@ -1592,7 +1614,8 @@ class MdhClient() :
         else :
             if self.verbose >1 :
                 print("deleting replicas ",rse,gfiles)
-            self.rucio.delete_replicas(rse = rse, files = gfiles)
+            for split in self.chunker(gfiles,500):
+                self.rucio.delete_replicas(rse = rse, files = split)
 
         return
 
