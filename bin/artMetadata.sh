@@ -18,7 +18,7 @@ if [ -z "$ARTFILE" ]; then
     exit 1
 fi
 
-if [ -z "$MUSE_WORK_DIR" ]; then
+if ! command -v mu2e > /dev/null ; then
 
     if [ ! -r /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh ]; then
         echo "mdh artMetadata.sh can't run without an Offline available"
@@ -26,10 +26,15 @@ if [ -z "$MUSE_WORK_DIR" ]; then
     fi
 
     source /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh
-    unsetup sqlite
-    unsetup python
+    if [ $? -ne 0 ]; then
+        echo "mdh artMetadata.sh failed to run mu2einit"
+        exit 1
+    fi
+    if [[ "$MU2E_SPACK" && "$SPACK_ENV" ]]; then
+        echo "mdh artMetadata.sh found spack env already active"
+        exit 1
+    fi
     muse setup Offline
-    #muse setup /mu2e/app/users/rlc/dev
     if [ $? -ne 0 ]; then
         echo "mdh artMetadata.sh failed to setup Offline"
         exit 1
