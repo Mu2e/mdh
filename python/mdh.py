@@ -432,7 +432,7 @@ class MdhClient() :
         # attempting a re-authorized operation
         self.auth_renew_time = 1500
         self.auth_expire_time = 0
-        self.metacat = MetaCatClient()
+        self.metacat = MetaCatClient(timeout = 3600)
         self.ddisp = DataDispatcherClient()
         # RucioClient reads X509 proxies when it is created, so
         # delay creation until there is a request for a Rucio action
@@ -1432,6 +1432,9 @@ class MdhClient() :
         else :
             ds = MDataset(dataset)
 
+        if self.verbose > 0 :
+            print(f"Starting locate dataset {ds.did()}")
+
         self.ready_metacat()
         self.ready_rucio()
 
@@ -1477,12 +1480,13 @@ class MdhClient() :
                 tempa.clear()
                 try :
                     for rrfile in self.rucio.list_replicas(split,rse_expression=rse) :
-                        if rrfile['rses'] != {} : # did not match rse
+                        if rrfile['rses'] != {} : # matched rse
                             tempa.append(rrfile['name'])
                     qmore = False
                 except Exception as e :
                     print(f"caught list_replicas exception, itry={itry}",flush=True)
-
+            if qmore :
+                raise RuntimeError("rucio list_replicas failed after 5 tries"+ds.did())
             rrfiles.extend(tempa)
 
         nrrfiles = len(rrfiles)
@@ -1506,11 +1510,13 @@ class MdhClient() :
         rdids = [] # list for creating RSE entries for files
         ncrec = 0
         ncrep = 0
+        #print("DEBUG starting Rcuio list loop ",ds.did())
         for mcf in self.metacat.get_dataset_files(did = ds.did()) :
 
             filed = {'scope' : mcf['namespace'],
                      'name' : mcf['name'] }
 
+            #print("DEBUG",mcf['name'],len(rrfiles))
             if mcf['name'] not in rrfiles :
                 # file does not have replica for this RSE
 
@@ -1524,16 +1530,21 @@ class MdhClient() :
                          'adler32' : adler32 }
 
                 if mcf['name'] not in rfiles :
+                    #print("DEBUG adding0 ")
                     # file does not have record
                     dids.append(filei) # files to create
                     attdids.append(filed) # and to append to dataset
                 else :
+                    #print("DEBUG adding1 ")
                     # files which exist but need RSE added
                     rdids.append(filei)
 
 
         ncrec = len(dids)
         ncrep = len(rdids)
+        if self.verbose > 0 :
+            print(f"Need to create {ncrec} new files with locations")
+            print(f"Need to create {ncrep} locations for existing files")
 
         if ncrec > 0 :
             if self.verbose > 0 :
@@ -1543,7 +1554,21 @@ class MdhClient() :
                 print(f"would add {ncrec} new files with locations, and attach them to the dataset")
             else :
                 for split in self.chunker(dids,500):
-                    self.rucio.add_replicas(rse = rse, files = split)
+
+                    qmore = True
+                    itry = 0
+                    # protection againt unstable Rucio server
+                    while qmore and itry < 5 :
+                        itry = itry + 1
+                        try:
+                            self.rucio.add_replicas(rse = rse, files = split)
+                            qmore = False
+                        except Exception as e :
+                            print(f"caught add_replicas exception, itry={itry}",flush=True)
+                    if qmore :
+                        raise RuntimeError('rucio add_replicas1 failed after 5 tries : '+ds.did())
+
+
                 # attach the file records to a dataset
                 for split in self.chunker(attdids,500):
                     self.rucio.attach_dids( scope = ds.scope(),
@@ -1556,8 +1581,23 @@ class MdhClient() :
                 print(f"would add {ncrep} replica {rse} records to files")
             else :
                 for split in self.chunker(rdids,500):
-                    self.rucio.add_replicas(rse = rse, files = split)
 
+                    qmore = True
+                    itry = 0
+                    # protection againt unstable Rucio server
+                    while qmore and itry < 5 :
+                        itry = itry + 1
+                        try:
+                            self.rucio.add_replicas(rse = rse, files = split)
+                            qmore = False
+                        except Exception as e :
+                            print(f"caught add_replicas exception, itry={itry}",flush=True)
+
+                    if qmore :
+                        raise RuntimeError('rucio add_replicas2 failed after 5 tries : '+ds.did())
+
+        if self.verbose > 0 :
+            print(f"Finished locations for "+ds.did())
 
         return
 
@@ -1833,6 +1873,13 @@ class MdhClient() :
                 filesdd = {'files':files}
                 response = requests.post(stage_url, headers=header,
                                          json=filesdd, verify=False)
+                if self.verbose >1 :
+                    print("call dcache prestage url")
+                    print("stage_url",stage_url)
+                    print("header",header)
+                    print("filesdd",filesdd['files'][0])
+                    print("response",str(response))
+                    print("response text",response.text)
                 files = []
 
 
