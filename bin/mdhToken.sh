@@ -1,4 +1,19 @@
 #! /bin/bash
+
+# grid job, token is there or not
+
+if [ -v GRID_USER ]; then
+    if [ -v BEARER_TOKEN_FILE ]; then
+        echo $BEARER_TOKEN_FILE
+        exit 0
+    else
+        echo -e "\nCould not find token path in grid mode\n"
+        exit 1
+    fi
+fi
+
+# interactive, can renew
+
 if [ -v BEARER_TOKEN_FILE ]; then
     :
 elif [ -v XDG_RUNTIME_DIR ]; then
@@ -24,7 +39,7 @@ if ! klist -s ; then
     exit 1
 fi
 
-OUTPUT=$( eval $SCRIPT --minsec=600 --nooidc )
+OUTPUT=$( eval $SCRIPT --minsec=1500 --nooidc )
 if [ $? -ne 0 ]; then
     echo -e "\nfailed to renew token\n"
     echo "$OUTPUT"

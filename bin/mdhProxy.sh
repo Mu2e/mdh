@@ -1,8 +1,24 @@
 #! /bin/bash
+
 if ! command -v voms-proxy-info 2>&1 > /dev/null ; then
     echo -e "\nCould not find voms-proxy-info command\n"
     exit 1
 fi
+
+# grid job, proxy is there or not
+
+if [ -v GRID_USER ]; then
+    if [ -v X509_USER_PROXY ]; then
+        voms-proxy-info -path
+        exit 0
+    else
+        echo -e "\nCould not find proxy path in grid mode\n"
+        exit 1
+    fi
+fi
+
+# interactive, can renew
+
 RENEW=""
 if ! voms-proxy-info -exists ; then
     printenv | grep X509
