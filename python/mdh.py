@@ -14,8 +14,6 @@ import subprocess
 import pprint
 from datetime import datetime
 
-import gfal2
-
 from metacat.webapi import MetaCatClient
 from metacat.common.auth_client import AuthenticationError
 from metacat.webapi.webapi import AlreadyExistsError
@@ -437,8 +435,6 @@ class MdhClient() :
         # RucioClient reads X509 proxies when it is created, so
         # delay creation until there is a request for a Rucio action
         self.rucio = None
-        # gfal command parameters
-        self.ctx = gfal2.creat_context()
         self.verbose = 0
         self.dryrun = False
 
@@ -621,7 +617,6 @@ class MdhClient() :
         Prepare gfal client object with authentication
         '''
         token = self.get_token()
-        self.ctx.set_opt_string('BEARER', 'TOKEN', token)
 
     #
     #
@@ -1090,6 +1085,39 @@ class MdhClient() :
 
         return catmetadata
 
+
+    #
+    #
+    #
+
+    def gfal_rm_file(self, url):
+        '''
+        Run gfal to delete a file via url or path
+        Parameters:
+            url (str) : a file, local path or http url
+        Raises:
+            RuntimeError : could not run gfal-rm
+        Returns:
+            rc (bool) : True is deleted False is file was missing
+        '''
+
+        self.ready_gfal()
+
+        env = {"BEARER_TOKEN" : self.token}
+        cmd = f"gfal-rm -t 300 {url}"
+        result = subprocess.run(cmd, shell=True, timeout=320, encoding="utf-8",
+                                capture_output=True, env=env)
+        if result.returncode == 0 :
+            return True
+        elif result.returncode == 2 and "MISSING" in result.stdout :
+            return False
+        else :
+            print(result.stdout)
+            print(result.stderr)
+            raise RuntimeError("Could not run gfal-rm")
+
+        return False
+
     #
     #
     #
@@ -1129,12 +1157,6 @@ class MdhClient() :
 
         self.ready_gfal()
 
-        params = self.ctx.transfer_parameters()
-        params.overwrite = overwrite
-        params.create_parent = True
-        params.set_checksum = False
-        params.timeout = 1000
-
         self.ready_metacat()
 
         if source == 'local' :
@@ -1147,27 +1169,29 @@ class MdhClient() :
         else :
             destination_url = mfile.url(location = location, schema = 'http')
 
+        env = {"BEARER_TOKEN" : self.token}
+        cmd = "gfal-copy --parent --timeout 1000"
+        if overwrite :
+            cmd = cmd + " --force "
+        cmd = cmd + " " + source_url + " " + destination_url
+
         rc = 999
         for itry in range(effort) :
             time.sleep(5**itry - 1)
 
             if self.verbose > 0 :
                 print(f"copy try {itry} {source_url} {destination_url}")
-            try:
-                rc = self.ctx.filecopy(params, source_url, destination_url)
-                # if this didn't raise, then break out of retries
+            result = subprocess.run(cmd, shell=True, timeout=1100,
+                    encoding="utf-8", capture_output=True, env=env)
+            if result.returncode == 0 :
                 break
-            except Exception as e:
-                rc = 1
-                # gfal only raises generic errors, so have to parse the text
-                message = str(e)
-                # if the output file already exists, then quit with error
-                if "file exists" in message :
-                    raise
-                if itry == effort - 1 :
-                    raise
+            else :
+                print(f"Error running gfal-copy on try {itry}, output follows:")
+                print(result.stdout)
+                print(result.stderr)
+            if itry >= effort - 1 :
+                raise RuntimeError(f"Error exhausted retries while running gfal-copy {source_url} {destination_url}")
 
-        # if we get here, there was no error raised
 
         if secure :
 
@@ -1196,7 +1220,7 @@ class MdhClient() :
 
 
         if delete :
-            self.ctx.unlink(source_url)
+            self.gfal_rm_file(source_url)
 
         return
 
@@ -1219,14 +1243,19 @@ class MdhClient() :
         self.ready_gfal()
         url = mfile.url(location = location, schema = "http")
 
-        params = self.ctx.transfer_parameters()
-        params.timeout = 300
 
-        try :
-            self.ctx.lstat(url)
-        except Exception as e :
-            #print(str(e))
+        env = {"BEARER_TOKEN" : self.token}
+        cmd = f"gfal-stat -t 300 {url}"
+        result = subprocess.run(cmd, shell=True, timeout=320, encoding="utf-8",
+                                capture_output=True, env=env)
+        if result.returncode == 0 :
+            return True
+        elif result.returncode == 2 and "File not found" in result.stderr :
             return False
+        else :
+            print(result.stdout)
+            print(result.stderr)
+            raise RuntimeError("Could not run gfal-lstat")
 
         return True
 
@@ -1263,7 +1292,7 @@ class MdhClient() :
             if self.dryrun :
                 print("would delete ",url)
             else :
-                self.ctx.unlink(url)
+                self.gfal_rm_file(url)
         except Exception as e:
             message = str(e)
             if force :
@@ -2007,7 +2036,7 @@ class MdhClient() :
             print("Checking locations in Rucio")
 
         rlocs = []
-        if rexists :
+        if rexists and mfile:
             dids = [{"scope":mfile.namespace(), "name":mfile.name()}]
             for rr in self.rucio.list_replicas(dids=dids) :
                 for rse in rr['rses'].keys() :
