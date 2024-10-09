@@ -18,6 +18,7 @@ from metacat.webapi import MetaCatClient
 from metacat.common.auth_client import AuthenticationError
 from metacat.webapi.webapi import AlreadyExistsError
 from metacat.webapi.webapi import NotFoundError
+from metacat.webapi.webapi import BadRequestError
 
 from data_dispatcher.api import DataDispatcherClient
 
@@ -128,13 +129,15 @@ class MParameters :
             did = name.split('.')[1] + ':' + name
         self.check_did(did,qfile)
 
-    def check_did(self, did, qfile=True):
+    def check_did(self, did, qfile=True, qAddhocDs=True):
         '''
         Check file name for the right number of fields, and allowed
         chars, data_tiers, and file_types
 
         Parameters:
-            fileName (str) : the base file name
+            did (str) : the namespace and file name
+            qfile (bool) : check for legal file name (t) or dataset (f)
+            qAddhocDs (bool) : allow dataset names with no dots
         Raises:
             RuntimeError : file name is illegal
         '''
@@ -156,7 +159,10 @@ class MParameters :
         else :
             nFields = 5;
 
-        if len(fields) != nFields:
+        # dataset with ad-hoc format, no dots, is allowed
+        qah = qAddhocDs and (not qfile) and len(fields) == 1
+
+        if len(fields) != nFields and (not qah):
             raise RuntimeError(f'"did" did not have {nFields} fields: {did}')
 
         pat = re.compile('[a-zA-Z0-9_-]+')
@@ -166,6 +172,9 @@ class MParameters :
                 raise RuntimeError('file name has empty field: '+did)
             if not re.fullmatch(pat,field) :
                 raise RuntimeError('file name contains bad characters: '+did)
+
+        if qah : # if one ad-hoc field, then done checking
+            return
 
         if not re.fullmatch(pat,field) :
             raise RuntimeError('file name contains bad characters: '+did)
@@ -197,27 +206,30 @@ _pars = MParameters()
 #
 #
 class MDataset :
-    def __init__(self, name = None, namespace = None,
-                 catmetadata = None, standard = True) :
+    def __init__(self, name = None, namespace = None, catmetadata = None) :
+        self.ds = None
+        self.ns = None
+
         if name :
             if ':' in name :
                 self.ds = name.split(':')[1]
+                self.ns = name.split(':')[0]
             else :
                 self.ds = name
-        else :
-            self.ds = None
 
         if namespace :
             self.ns = namespace
-        elif self.ds :
+
+        if (not self.ns) and self.ds :
             # default namespace is the owner field of the dataset name
-            self.ns = self.ds.split('.')[1]
+            fields = self.ds.split('.')
+            if len(fields) == 5 :
+                self.ns = fields[1]
 
         self.catmd = catmetadata
 
-        # use the gloabl MParameters to check name structure
-        if standard :
-            _pars.check_did(self.did(),False)
+        # use the global MParameters to check name structure
+        _pars.check_did(self.did(),False)
 
         self.file_list = []
 
@@ -261,15 +273,35 @@ class MDataset :
         return self.ns+':'+self.ds
 
     def tier(self) :
-        return self.ds.split('.')[0]
+        fields = self.ds.split('.')
+        if len(fields) == 5 :
+            return fields[0]
+        else :
+            return None
     def owner(self) :
-        return self.ds.split('.')[1]
+        fields = self.ds.split('.')
+        if len(fields) == 5 :
+            return fields[1]
+        else :
+            return None
     def description(self) :
-        return self.ds.split('.')[2]
+        fields = self.ds.split('.')
+        if len(fields) == 5 :
+            return fields[2]
+        else :
+            return None
     def configuration(self) :
-        return self.ds.split('.')[3]
+        fields = self.ds.split('.')
+        if len(fields) == 5 :
+            return fields[3]
+        else :
+            return None
     def format(self) :
-        return self.ds.split('.')[5]
+        fields = self.ds.split('.')
+        if len(fields) == 5 :
+            return fields[4]
+        else :
+            return None
 
     def files(self) :
         return self.file_list
@@ -648,7 +680,7 @@ class MdhClient() :
             elif self.is_file(item) :
                 flist.append(os.path.basename(item))
             else :
-                ds = MDataset(item,standard=False)
+                ds = MDataset(item)
 
             if ds :
                 self.ready_metacat()
@@ -913,7 +945,7 @@ class MdhClient() :
                         print("file exists, no force/overwrite requested")
                     raise
 
-            except NotFoundError as e :
+            except BadRequestError as e :
                 # expect this if the default dataset does not exist
                 if self.verbose > 0 :
                     print("while declaring file, default dataset does not exist, will declare it")
@@ -922,7 +954,8 @@ class MdhClient() :
             except Exception as e :
                 # expect this if the default dataset does not exist
                 if self.verbose > 0 :
-                    print("declare_error final error"+str(e))
+                    print("declare error final error"+str(e))
+                    raise
 
 
         if delete :
@@ -1013,7 +1046,7 @@ class MdhClient() :
                     inText = False
                 if inText :
                     ss = line.split()
-                    if ss[0]=='rse.runs' :
+                    if ss[0]=='rs.runs' :
                         srlist = [ int(sr) for sr in ss[1:] ]
                         artmetadata[ss[0]] = srlist
                     else :
