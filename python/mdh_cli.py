@@ -31,7 +31,7 @@ class MdhCli() :
             copy-files       copy files to/from/within dCache
             locate-dataset   record dcache location for files in a dataset
             delete-files     delete files and records
-            prestage-dataset move a dataset from tape to disk
+            prestage-files   copy files from tape to tape-backed dcache
             verify-dataset   check aspects of a dataset
             upload-grid      upload a set of grid job output files
 
@@ -366,10 +366,6 @@ class MdhCli() :
     #
     #
 
-    #
-    #
-    #
-
     def delete_files_cmd(self, args):
 
         parser = argparse.ArgumentParser(
@@ -413,26 +409,31 @@ class MdhCli() :
                               force=pargs.force)
 
 
-#        for file in flist :
-#            self.mdh.copy_file(file = file, location = pargs.location,
-#                               source = pargs.source)
+    #
+    #
+    #
 
-
-    def prestage_dataset_cmd(self,args):
+    def prestage_files_cmd(self,args):
 
         parser = argparse.ArgumentParser(
-            prog="mdh prestage-dataset",
-            description='Move a dataset from tape to tape-backed dCache',
+            prog="mdh prestage-files",
+            description='Move files from tape to tape-backed dCache',
             formatter_class=argparse.RawTextHelpFormatter )
 
-        parser.add_argument("dataset",
-                            type=str, help="dataset of files to operate on")
+        parser.add_argument('-m', '--monitor', action='store_true',
+                            help='skip pinning and monitor fraction on disk')
+        parser.add_argument("names", nargs="+",
+                            type=str, help="names of files or datasets (one or more)\n\"-\" to take names from stdin")
 
         self.add_verbose(parser)
         pargs = parser.parse_args(args)
         self.mdh.set_verbose(pargs.verbose)
 
-        self.mdh.prestage_dataset(pargs.dataset)
+        names = self.collect_names(pargs)
+
+        flist = self.mdh.names_to_files(names)
+
+        self.mdh.prestage_files(flist, pargs.monitor)
 
 
     #
@@ -528,8 +529,8 @@ class MdhCli() :
             self.locate_dataset_cmd(args)
         elif command == "delete-files" :
             self.delete_files_cmd(args)
-        elif command == "prestage-dataset" :
-            self.prestage_dataset_cmd(args)
+        elif command == "prestage-files" :
+            self.prestage_files_cmd(args)
         elif command == "verify-dataset" :
             self.verify_dataset_cmd(args)
         elif command == "upload-grid" :
