@@ -836,8 +836,9 @@ class MdhClient() :
                                 verify="/etc/grid-security/certificates")
 
         if response.status_code == 404 :
-            raise RuntimeError("File not found in dCache")
+            raise RuntimeError("File not found in dCache: "+file_spec)
         elif response.status_code != 200 :
+            print("Uknown error in query_dcache for file : "+file_spec)
             response.raise_for_status()
 
         return json.loads(response.text)
@@ -1881,36 +1882,24 @@ class MdhClient() :
     #
     #
 
-    def prestage_dataset(self, dataset):
+    def prestage_files(self, flist, monitor=False):
         '''
 
         Use data dispatcher to prestage a dataset by requesting all files
 
         Parameters:
-            dataset (str) : the metacat dataset name
+            flist (list(str)) : the list of files to prestage
+            monitor (bool) : T = skip pin commands, just check on disk
 
         '''
 
-        if isinstance(dataset,MDataset) :
-            ds = dataset
-        else :
-            ds = MDataset(dataset)
-
-        self.ready_metacat()
-
-        flist = []
-        for mcf in self.metacat.get_dataset_files(did = ds.did()) :
-            if (self.verbose > 0 or self.dryrun ) and len(flist) == 0 :
-                print("prestage_dataset retrieved first file:")
-                print(mcf)
-            flist.append(mcf['name'])
 
         nfile = len(flist)
         if self.verbose > 0 :
-            print(f"prestaging {ds.did()}, {nfile} files")
+            print(f"working on {nfile} files")
 
         if self.dryrun > 0 :
-            print(f"would prestage {nfile} files")
+            print(f"would work on {nfile} files")
             return
 
         filedl = []
@@ -1919,30 +1908,44 @@ class MdhClient() :
             mfile = MFile(name=fn)
             path = mfile.url() # tape path
             path = path[5:] # strip /pnfs
-            filedl.append({'path':path,'diskLifetime':'P7D'})
+            filedl.append(path)
             fstatus.append({'name':mfile.name(),'staged':False})
 
 
-        split = 200
-        stage_url = "https://fndcadoor.fnal.gov:3880/api/v1/tape/stage"
-        token = self.get_token()
-        header={ 'Authorization' : "Bearer " + token }
+        if monitor :
+            if self.verbose > 0 :
+                print(f"skip prestage calls")
+        else :
+            if self.verbose > 0 :
+                print(f"start prestage calls")
+            split = 1000 # anticpating threads
+            stage_url = "https://fndcadoor.fnal.gov:3880/api/v1/namespace"
+            datad={"action" : "pin", "lifetime" : "14", "lifetime-unit" : "DAYS"}
+            files = []
+            for ifile,filed in enumerate(filedl) :
+                files.append(filed)
+                if (ifile > 0 and ifile%split == 0) or ifile == nfile-1 :
+                    # process chunk
+                    # refresh token here since full list can take more than 1h
+                    token = self.get_token()
+                    header={ 'Authorization' : "Bearer " + token }
+                    for file in files:
+                        url = stage_url+file
+                        response = requests.post(url, headers=header,
+                                     json=datad, verify=False)
 
-        files = []
-        for ifile,filed in enumerate(filedl) :
-            files.append(filed)
-            if (ifile > 0 and ifile%split == 0) or ifile == nfile-1 :
-                filesdd = {'files':files}
-                response = requests.post(stage_url, headers=header,
-                                         json=filesdd, verify=False)
-                if self.verbose >1 :
-                    print("call dcache prestage url")
-                    print("stage_url",stage_url)
-                    print("header",header)
-                    print("filesdd",filesdd['files'][0])
-                    print("response",str(response))
-                    print("response text",response.text)
-                files = []
+                        if (self.verbose >1 and ifile < 5) or self.verbose >2:
+                            print("call dcache prestage url")
+                            print("stage_url",url)
+                            print("header",header)
+                            print("datad",datad)
+                            print("response",str(response))
+                            print("response text",response.text)
+                    if self.verbose > 0 :
+                        nows = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        print(f"{nows} prestaging calls: {ifile+1}",flush=True)
+                    files = []
+
 
 
         nstaged = 0
@@ -1967,7 +1970,7 @@ class MdhClient() :
             if self.verbose :
                 nows = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 percent = int(100*nstaged/(nstaged+nunstaged))
-                print(f"{nows} {percent:3d}% staged")
+                print(f"{nows} {percent:3d}% staged",flush=True)
             if nunstaged > 0 :
                 time.sleep(100)
 
