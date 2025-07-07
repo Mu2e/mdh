@@ -18,7 +18,7 @@ if [ -z "$ARTFILE" ]; then
     exit 1
 fi
 
-if ! command -v mu2e > /dev/null ; then
+if [ -z "$MU2E" ] ; then
 
     if [ ! -r /cvmfs/mu2e.opensciencegrid.org/setupmu2e-art.sh ]; then
         echo "mdh artMetadata.sh can't run without an Offline available"
@@ -30,10 +30,10 @@ if ! command -v mu2e > /dev/null ; then
         echo "mdh artMetadata.sh failed to run mu2einit"
         exit 1
     fi
-    if [[ "$MU2E_SPACK" && "$SPACK_ENV" ]]; then
-        echo "mdh artMetadata.sh found spack env already active"
-        exit 1
-    fi
+fi
+
+if ! command -v mu2e > /dev/null ; then
+
     muse setup Offline
     if [ $? -ne 0 ]; then
         echo "mdh artMetadata.sh failed to setup Offline"
