@@ -346,6 +346,7 @@ class MFile :
             self.fs = os.path.abspath(filespec)
 
         self.catmd = catmetadata
+        self.replicas = {}
 
         _pars.check_did(self.did())
 
@@ -353,6 +354,8 @@ class MFile :
 
     def add_catmetadata(self, catmetadata) :
         self.catmd = catmetadata
+    def add_replica(self,location,status="unknown") :
+        self.replicas[location] = status;
 
     def name(self) :
         return self.fn
@@ -407,6 +410,8 @@ class MFile :
     def default_dataset_did(self) :
         return self.namespace()+':'+self.default_dataset()
 
+    def get_replicas(self) :
+        return self.replicas
 
     def url(self, location="tape", schema="path") :
 
@@ -597,6 +602,12 @@ class MdhClient() :
         Raises:
             RuntimeError : any problem finding or making the proxy
         '''
+
+        uname = _pars.get_username()
+        if uname != "mu2epro" :
+            print("Warning - proxy discontinued, some commands will fail")
+            self.proxy = ""
+            return None
 
         ctime = int( time.time() )
         if ctime - self.last_proxy_time < self.renew_time :
@@ -1721,6 +1732,63 @@ class MdhClient() :
                 self.rucio.delete_replicas(rse = rse, files = split)
 
         return
+
+    #
+    #
+    #
+
+    def find_rucio_replicas(self, dids, verify=False):
+        '''
+        Lookup Rucio file replicas
+
+        Parameters:
+            dids (file|MFile|dataset|MDataset or lists ) : what to look up
+            verify (bool) : if True check dcache staging (default=False)
+
+        Returns:
+            mfiles ([MFile]) = list of the files with replicas set
+        '''
+
+        lfiles = [] # return list of MFile with replicas info
+
+        self.ready_metacat()
+        self.ready_rucio()
+
+        rdids = []
+        if isinstance(dids,list) :
+            olist = dids
+        else :
+            olist = [dids]
+        for did0 in olist:
+            if isinstance(did0,str) :
+                if did0.count(".") == 5 :
+                    did = MFile(name=did0)
+                else :
+                    did = MDataset(name=did0)
+            else :
+                did = did0
+            rdids.append({'scope':did.namespace(), 'name':did.name()})
+
+        if self.verbose > 0 :
+            print(len(dids),"did's for Rucio lookup ")
+        nprint = 0
+        for rfile in self.rucio.list_replicas(dids=rdids) :
+            mfile = MFile(rfile['name'])
+            if 'rses' in rfile :
+                for rse in rfile['rses'].keys() :
+                    loc = _pars.loc_from_rse(rse)
+                    if loc :
+                        stat = "unknown"
+                        if verify and loc == "tape":
+                            info = self.query_dcache(file_name=mfile.name())
+                            if info["fileLocality"].find("ONLINE") >= 0 :
+                                stat = "staged"
+                        if self.verbose > 0  or (self.verbose > 0 and nprint < 3)  :
+                            print(mfile.name(),"add",loc,stat)
+                        mfile.add_replica(loc,stat)
+            lfiles.append(mfile)
+
+        return lfiles
 
     #
     #
