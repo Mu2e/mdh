@@ -2329,10 +2329,10 @@ class MdhClient() :
 
         # read the manifest file and process each file in turn
         with open(manifest) as fman:
-            line = fman.readline()
+            line = fman.readline().rstrip('\n')
             while line :
                 if line[0] == '#':
-                    line = fman.readline()
+                    line = fman.readline().rstrip('\n')
                     continue
 
                 if self.verbose > 0 :
@@ -2437,4 +2437,4 @@ class MdhClient() :
                                   overwrite=ow)
 
                 # repeat with the next line in the file
-                line = fman.readline()
+                line = fman.readline().rstrip('\n')
