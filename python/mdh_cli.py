@@ -113,21 +113,38 @@ class MdhCli() :
                             type=str, help="names of files or datasets (one or more)\n\"-\" take files from stdin")
         parser.add_argument("-l","--location", action="store",
                             dest="location", default="tape",
-                            help="standard location to use:\n  tape (default), disk, scratch, nersc")
+                            help="standard location to use:\n  tape (default), disk, scratch\n  or \"best\" to lookup in databases")
         parser.add_argument("-s","--schema", action="store",
                             dest="schema", default="path",
                             help="Schema to use in writing the url:\n  path (default),http,root,dcap,sam")
+        parser.add_argument("-a","--available", action="store_true",
+                            dest="available", default=False,
+                            help="if present, only print staged files")
 
         pargs = parser.parse_args(args)
 
         names = self.collect_names(pargs)
 
-        flist = self.mdh.names_to_files(names)
+        if pargs.location == "best" or pargs.available :
+            # MFile list with replicas and status set
+            flist = self.mdh.find_rucio_replicas(names, pargs.available)
+            for file in flist :
+                url = None
+                reps = file.get_replicas()
+                if "disk" in reps :
+                    url = file.url("disk",pargs.schema)
+                elif "tape" in reps :
+                    if not pargs.available or reps['tape'] == "staged" :
+                        url = file.url("disk",pargs.schema)
+                if url :
+                    print(url)
+        else :
+            flist = self.mdh.names_to_files(names)
+            for file in flist :
+                mf = mdh.MFile(name=file)
+                url = mf.url(pargs.location,pargs.schema)
+                print(url)
 
-        for file in flist :
-            mf = mdh.MFile(name=file)
-            url = mf.url(pargs.location,pargs.schema)
-            print(url)
 
     #
     #
@@ -328,7 +345,14 @@ class MdhCli() :
 
         names = self.collect_names(pargs)
 
-        flist = self.mdh.names_to_files(names)
+        if pargs.source == 'local':
+            # these are filespecs, so need to save path in MFile
+            flist = []
+            for file in names :
+                flist.append(mdh.MFile(filespec=file))
+        else :
+            # soure files are in standard locations
+            flist = self.mdh.names_to_files(names)
 
         for file in flist :
             self.mdh.copy_file(file = file, location=pargs.location,
