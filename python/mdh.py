@@ -1051,7 +1051,7 @@ class MdhClient() :
             mtext = result.stdout.decode("utf-8")
             inText = False
             for line in mtext.split("\n") :
-                if line[0:21] == "GenEventCount total:" :
+                if "GenEventCount total:" in line :
                     artmetadata["gen.count"] = int(line.split()[2])
 
                 if line[0:18] == "end RunSubrunEvent" :
