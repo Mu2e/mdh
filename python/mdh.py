@@ -645,7 +645,7 @@ class MdhClient() :
         '''
         Prepare Rucio client object, and add authentication
         '''
-        self.get_proxy()
+        self.get_token()
         # delayed construction because creating the client causes
         # proxy to be made
         if not self.rucio :
@@ -1068,7 +1068,7 @@ class MdhClient() :
 
         if rename_seq :
             if not artmetadata :
-                raise RunTimeError("Rename requested but no art metadata")
+                raise RuntimeError("Rename requested but no art metadata")
             aa = mfile.name().split(".")
             run = int(artmetadata["rs.first_run"])
             subrun = int(artmetadata["rs.first_subrun"])
@@ -1497,7 +1497,7 @@ class MdhClient() :
             dataset (str|MDataset) : dataset name or did
             location (str) : location (tape (default),disk,scratch,nersc)
         Raises :
-             RunTimeError : Rucio has more files than metacat
+             RuntimeError : Rucio has more files than metacat
         '''
 
 
@@ -1680,12 +1680,11 @@ class MdhClient() :
     #
     #
 
-    def delete_rucio_replica(self, dataset, files, location, force=False ):
+    def delete_rucio_replica(self, files, location, force=False ):
         '''
         Delete a Rucio file replica
 
         Parameters:
-            dataset (str|MDataset) : a dataset object or dataset name
             files (str|list) = file names to delete replica
             location (str) : standard location (tape, disk, scratch)
             force (bool) = (default=False) Do Not Raise on file does not exist
@@ -1694,42 +1693,64 @@ class MdhClient() :
             rc (int) : 0 or 2 for already exists (if force)
 
         '''
+        time0 = int( time.time() )
+        if self.verbose>1 :
+            print("Starting delete_rucio_replica")
 
-        if isinstance(dataset,MDataset) :
-            ds = dataset
+        if isinstance(files,list) :
+            afiles = files
         else :
-            ds = MDataset(dataset)
+            afiles = [files]
+
+        # make all MFiles
+        mfiles = []
+        dids = []
+        for afile in afiles:
+            if isinstance(afile,MFile) :
+                mm = afile
+            else :
+                mm = MFile(afile)
+            mfiles.append(mm)
+            dids.append({"scope":mm.namespace(), "name":mm.name()})
+
+        rse = _pars.location(location,'rucio')
 
         self.ready_rucio()
 
-        rse = _pars.location(location,'rucio')
-        dids = [{"scope":ds.namespace(), "name":ds.name()}]
-
-        rrfiles = []
-        for rrfile in self.rucio.list_replicas(dids,rse_expression=rse) :
-            rrfiles.append(rrfile['name'])
+        time1 = int( time.time() )
+        if self.verbose>1 :
+            print("delete_rucio_replica listing replicas, time ", time1-time0)
 
         gfiles = []
-        for file in files :
-            if isinstance(file,MFile) :
-                mf = file
-            else :
-                mf = MFile(file)
-            if mf.name() in rrfiles :
-                filed = {'scope' : mf.namespace(),
-                         'name' : mf.name() }
-                gfiles.append(filed)
+        for split in self.chunker(dids,1000):
+            #print(str(dids[0]))
+            for rrfile in self.rucio.list_replicas(split,rse_expression=rse) :
+                #print(str(rrfile))
+                gfiles.append( {'scope' : rrfile['scope'],
+                         'name' : rrfile['name'] } )
+
+        if not force:
+            if len(afiles) != len(gfiles) :
+                raise RuntimeError(f'requested {len(afiles)} replicas deleted, but only {len(gfiles)} replicas found')
+
+        time1 = int( time.time() )
+        if self.verbose>1 :
+            print("delete_rucio_replica deleting replicas, time ", time1-time0)
 
         if self.verbose >0 or self.dryrun :
-            print(f'delete replica: {len(files)} input files,\n   {len(rrfiles)} file in locations dataset, {len(gfiles)} overlap')
+            print(f'delete replica: {len(afiles)} input files,\n   {len(gfiles)} files in locations dataset')
 
         if self.dryrun :
-            print("would remove {len(gfiles)} files from {location} location")
+            print(f"would remove {len(gfiles)} files from {location} location")
         else :
             if self.verbose >1 :
-                print("deleting replicas ",rse,gfiles)
+                print("deleting replicas ",rse, len(gfiles))
             for split in self.chunker(gfiles,500):
                 self.rucio.delete_replicas(rse = rse, files = split)
+
+        time1 = int( time.time() )
+        if self.verbose>1 :
+            print("delete_rucio_replica done, time ", time1-time0)
 
         return
 
@@ -1912,7 +1933,7 @@ class MdhClient() :
             dcache (bool) : remove physical file in dcache
             replica (bool) : remove location record
         Raises :
-             RunTimeError : inconsistent flags
+             RuntimeError : inconsistent flags
         '''
 
 
@@ -1924,26 +1945,25 @@ class MdhClient() :
             print(f"processing {len(files)} files")
 
         if (dcache or replica) and not location :
-            raise RunTimeError("explicit location required for dcache or replica")
+            raise RuntimeError("explicit location required for dcache or replica")
 
-        for file in files :
-            if self.verbose > 1 or self.dryrun :
-                print("processing "+file)
-            if dcache :
-                if self.dryrun :
-                    print("    delete file in {location} location")
-                else :
+        if replica :
+            self.delete_rucio_replica(files,location,force)
+        if dcache :
+            if self.dryrun :
+                print(f"would remove {len(files)} files from",location)
+            else :
+                if self.verbose > 1:
+                    print(f"removing {len(files)} files from",location)
+                for file in files :
                     self.delete_dcache_file(file,location,force)
-            if replica :
-                if self.dryrun :
-                    print(f"    delete {location} replica record")
-                else :
-                    mfile = MFile(file)
-                    self.delete_rucio_replica(mfile.default_dataset(),[file],location,force)
-            if catalog :
-                if self.dryrun :
-                    print("    delete file catalog record")
-                else :
+        if catalog :
+            if self.dryrun :
+                print(f"would retire {len(files)} files in metacat")
+            else :
+                if self.verbose > 1:
+                    print(f"retiring {len(files)} files in metacat")
+                for file in files :
                     self.retire_metacat_file(file,force)
 
     #
@@ -2384,7 +2404,7 @@ class MdhClient() :
                 # mv the file if it needs to be renamed
                 if newname :
                     if jsonfile :
-                        raise RunTimeError("Request for file rename but json file provided (inconsistent)")
+                        raise RuntimeError("Request for file rename but json file provided (inconsistent)")
                     fs = os.path.abspath(localfile)
                     fd = os.path.dirname(fs)
                     newlocalfile = fd+"/"+newname
