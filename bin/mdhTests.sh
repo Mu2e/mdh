@@ -56,7 +56,7 @@ oneupload() {
     local EX_UPLOAD=mcs.${OWNER}.dh_test.${CONFIG}.001200_000001.art
     cp $ART_SOURCE $EX_UPLOAD
 
-    echo "***** create-metadata"
+    echo "***** create-metadata and declare"
     mdh create-metadata -v -f -d -o $EX_UPLOAD
     RC=$((RC+$?))
 
@@ -64,6 +64,7 @@ oneupload() {
     mdh copy-file -d -v -o -l $LOCS $EX_UPLOAD
     RC=$((RC+$?))
 
+    echo "***** ls of located file"
     PP=$(mdh print-url -l $LOCS $EX_UPLOAD)
     ls -l $PP
 
@@ -71,6 +72,27 @@ oneupload() {
     echo "***** locate-dataset"
     mdh locate-dataset -v -l $LOCS $EX_DS
     RC=$((RC+$?))
+
+    echo "***** check token for Rucio"
+    if ! seeToken >& /dev/null ; then
+        echo "no token, try to get one"
+        getToken
+    fi
+
+    echo "***** Rucio count replicas"
+    rucio replica list dataset --deep $OWNER:$EX_DS
+    RC=$((RC+$?))
+
+    echo "***** Rucio list files"
+    rucio did content list --short $OWNER:$EX_DS
+    RC=$((RC+$?))
+
+    if [ "$LOCS" != "scratch" ]; then
+        echo "***** find best urls"
+        mdh print-url -l best $EX_DS
+        exit 1
+        RC=$((RC+$?))
+    fi
 
     echo "***** validate-dataset"
     mdh verify-dataset $EX_DS
@@ -113,7 +135,7 @@ grid() {
     local LL="etc.${OWNER}.dh_test.${DSF}.001.log"
     echo "$CONTENT in LL" > $LL
 
-    # logf iel will pick up a tag, so can only refer to DS, not file name
+    # log file will pick up a tag, so can only refer to DS, not file name
     local LLDS="etc.${OWNER}.dh_test.${DSF}.log"
 
     local FS1=$(mdh print-url -l $LOCS $F1)
@@ -143,7 +165,7 @@ grid() {
     cat $FS1
     cat $FS2
 
-    echo "delete files from grid upload"
+    echo "delete files after grid upload"
     mdh delete-files -v -d -c -l $LOCS $FS1 $FS2 $LLDS
     echo "cleanup from grid upload"
     rm -f $F1 $F2
