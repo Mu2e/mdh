@@ -44,6 +44,7 @@ class MParameters :
             "raw":{"prod":"phy-raw","user":"phy-raw","type":"data"},
             "rec":{"prod":"phy-rec","user":"usr-dat","type":"data"},
             "ntd":{"prod":"phy-ntd","user":"usr-dat","type":"data"},
+            "dqm":{"prod":"phy-ntd","user":"usr-dat","type":"data"},
             "ext":{"prod":None,     "user":"usr-dat","type":"data"},
             "rex":{"prod":None,     "user":"usr-dat","type":"data"},
             "xnt":{"prod":None,     "user":"usr-dat","type":"data"},
@@ -486,6 +487,20 @@ class MdhClient() :
         if item.split(':')[-1].count('.') == 5 :
             return True
         else :
+            return False
+
+    def legal_file_name(self, name) :
+        try:
+            MFile(name)
+            return True
+        except :
+            return False
+
+    def legal_dataset_name(self, name) :
+        try:
+            MDataset(name)
+            return True
+        except :
             return False
 
     def chunker(self, seq, size):
@@ -1037,8 +1052,12 @@ class MdhClient() :
         # general metacat metadata, also called "attributes"
         catmetadata = {}
         artmetadata = {}
-        if mfile.extension() == "art" :
-            cmd = "artMetadata.sh " + mfile.filespec() + \
+        if mfile.extension() == "art" or mfile.extension() == "root" :
+            if mfile.extension() == "art" :
+                script = "artMetadata.sh "
+            else :
+                script = "rootMetadata.sh "
+            cmd = script + mfile.filespec() + \
                   " " + _pars.file_family(mfile.tier(),"type")
 
             result = subprocess.run(cmd, shell=True, timeout=600,
@@ -1062,7 +1081,10 @@ class MdhClient() :
                         srlist = [ int(sr) for sr in ss[1:] ]
                         artmetadata[ss[0]] = srlist
                     else :
-                        artmetadata[ss[0]] = int(ss[1])
+                        if len(ss) >1 :
+                            artmetadata[ss[0]] = int(ss[1])
+                        else :
+                            artmetadata[ss[0]] = 0
                 if line[0:20] == "start RunSubrunEvent" :
                     inText = True
 
@@ -1112,8 +1134,16 @@ class MdhClient() :
                 for pp in parents :
                     parentList.append(pp)
             else :
-                for pp in parents.split(",") :
-                    parentList.append(pp)
+                if parents.count('.') == 1 :
+                    # interpret as a local file like "parents.txt"
+                    if not os.path.exists(parents) :
+                        raise runTimeError('parents local file not found: "'+parents)
+                    with open(parents, "r") as f:
+                        parentList = f.read().splitlines()
+                else :
+                    # interpret as a csv str of file names
+                    for pp in parents.split(",") :
+                        parentList.append(pp)
             for pp in parentList :
                 mf = MFile(pp)
                 _pars.check_did(mf.did())
