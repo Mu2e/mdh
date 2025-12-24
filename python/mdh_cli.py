@@ -468,7 +468,9 @@ class MdhCli() :
 
         parser = argparse.ArgumentParser(
             prog="mdh verify-dataset",
-            description='check aspects of a dataset',
+            description='check aspects of a dataset:\n'
+            '  status    records   replicas           bytes        events     dataset\n'
+            '  with status: t,d,s test file actual locations; T,D,S replica locations',
             formatter_class=argparse.RawTextHelpFormatter )
 
         parser.add_argument("dataset", nargs="+",
@@ -502,11 +504,29 @@ class MdhCli() :
 
         parser = argparse.ArgumentParser(
             prog="mdh upload-grid",
-            description='copy and declare a set of grid job output files',
+            description='''copy and declare a set of grid job output files
+
+        rows in the manifest or file to upload:
+
+        localfile , location , parents , json , newname
+
+        lines that start with "#" are comments and ignored.
+        Location is tape, disk, or scratch. If blank, defaults to tape.
+        Parents may be a data file name or the name of a local file
+        containing parent data file names.
+        Json is the local file name of json metadata, if blank,
+        then metadata will be generated. (typical use)
+        If newname is not blank then rename localfile into newname
+        before metadata and upload.
+        If localfile is empty and rename is <filename>.log, then create
+        log file out of condor logs (recommended)
+        log files should be last in the list to capture as much
+        as possible.
+''',
             formatter_class=argparse.RawTextHelpFormatter )
 
         parser.add_argument("manifest",
-                            type=str, help="text file with list of files to move")
+                            type=str, help="text file with list of files to upload")
         parser.add_argument("-m","--mode", action="store",
                             dest="mode", default="overwrite",
                             help="output method: overwrite (default), tag, tagclean")

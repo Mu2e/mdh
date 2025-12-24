@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import argparse
+import json
+import ROOT
+
+# Suppress ROOT's C++ startup messages and warnings from stdout
+ROOT.PyConfig.IgnoreCommandLineOptions = True
+ROOT.gErrorIgnoreLevel = ROOT.kError
+
+def get_summary(filename, treename):
+    """
+    Attempts to extract RSE data.
+    Returns a dictionary for output.
+    All descriptive errors are sent to stderr.
+    """
+
+    # 1. Try to open the file
+    tfile = ROOT.TFile.Open(filename)
+    if not tfile or tfile.IsZombie():
+        sys.stderr.write(f"Error: Cannot open file {filename}\n")
+        return ""
+
+    # 2. Check if the TTree exists
+    tree = tfile.Get(treename)
+
+    if not tree or not isinstance(tree, ROOT.TTree):
+        sys.stderr.write(f"Error: TTree '{treename}' not found in {filename}\n")
+        tfile.Close()
+        return {}
+
+    try:
+        # 3. Use RDataFrame to pull data
+        df = ROOT.RDataFrame(tree)
+        data = df.AsNumpy(["run", "subrun", "event"])
+
+        # Zip and sort (Major: run, Mid: subrun, Minor: event)
+        events = list(zip(data["run"], data["subrun"], data["event"]))
+        events.sort()
+
+        # Handle empty tree case
+        if not events:
+            return {"rse.nevent": 0}
+
+        first = events[0]
+        last = events[-1]
+
+        # 4. Success: Return summary with nevent signal
+        return {
+            "rse.first_run":    int(first[0]),
+            "rse.first_subrun": int(first[1]),
+            "rse.first_event":  int(first[2]),
+            "rse.last_run":     int(last[0]),
+            "rse.last_subrun":  int(last[1]),
+            "rse.last_event":   int(last[2]),
+            "rse.nevent":       len(events)
+        }
+
+    except Exception as e:
+        sys.stderr.write(f"Error processing data: {str(e)}\n")
+        return {}
+    finally:
+        tfile.Close()
+
+def main():
+    parser = argparse.ArgumentParser(description='Extract RSE summary to JSON.')
+    parser.add_argument('filename', help='Path to local ROOT file')
+    parser.add_argument('--tree', default='EventNtuple/ntuple', help='Tree path')
+    parser.add_argument("-j","--json", action="store_true",
+                            dest="json", default=False,
+                            help="if present, print json format")
+
+    args = parser.parse_args()
+
+    # Get the dictionary
+    output_data = get_summary(args.filename, args.tree)
+
+    # Print ONLY JSON to stdout
+    if args.json :
+        print(json.dumps(output_data, indent=4))
+    else :
+        print("start RunSubrunEvent")
+        for k,v in output_data.items():
+            print(k,v)
+        print("end RunSubrunEvent")
+
+if __name__ == "__main__":
+    main()
