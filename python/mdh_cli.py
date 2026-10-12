@@ -2,6 +2,7 @@
 import sys
 import argparse
 import json
+import traceback
 import mdh
 
 #
@@ -581,3 +582,28 @@ class MdhCli() :
             self.upload_grid_cmd(args)
         else :
             print("Unknown command: ",command)
+
+#
+# the "mdh" command entry point.  bin/mdh calls this, and so does the
+# console script declared in pyproject.toml
+#
+
+def main():
+    cli = MdhCli()
+    try:
+        rc = cli.run()
+        # If your run() occasionally returns an int, honor it; otherwise success.
+        sys.exit(rc if isinstance(rc, int) else 0)
+    except SystemExit as e:
+        # argparse and sys.exit() raise this; preserve its code.
+        sys.exit(e.code if isinstance(e.code, int) else (0 if e.code is None else 1))
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        sys.exit(130)  # 128 + SIGINT
+    except Exception as e:
+        verbose = any(a in ("-v", "--verbose") for a in sys.argv[1:])
+        if verbose:
+            traceback.print_exc()
+        else:
+            print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)

@@ -1,27 +1,9 @@
 #! /usr/bin/env python3
-import sys
-import traceback
-import mdh_cli
-
-def main():
-    cli = mdh_cli.MdhCli()
-    try:
-        rc = cli.run()
-        # If your run() occasionally returns an int, honor it; otherwise success.
-        sys.exit(rc if isinstance(rc, int) else 0)
-    except SystemExit as e:
-        # argparse and sys.exit() raise this; preserve its code.
-        sys.exit(e.code if isinstance(e.code, int) else (0 if e.code is None else 1))
-    except KeyboardInterrupt:
-        print("Interrupted", file=sys.stderr)
-        sys.exit(130)  # 128 + SIGINT
-    except Exception as e:
-        verbose = any(a in ("-v", "--verbose") for a in sys.argv[1:])
-        if verbose:
-            traceback.print_exc()
-        else:
-            print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+#
+# The mdh command.  The implementation is main() in python/mdh_cli.py,
+# so that the pip console script and this script are the same code path.
+#
+from mdh_cli import main
 
 if __name__ == "__main__":
     main()
