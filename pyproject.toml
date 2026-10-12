@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mu2e-mdh"
+version = "1.12.0"
+description = "Mu2e data-handling tools: file and dataset naming conventions, the standard paths they imply, and a metacat/Rucio client layer"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "Mu2e Collaboration" }]
+keywords = ["mu2e", "fermilab", "data handling", "metacat", "rucio"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+#
+# Deliberately empty.  The naming conventions and the standard paths they
+# imply (mdh_names: MParameters, MDataset, MFile and MFile.url) need only
+# the python standard library, so "pip install mu2e-mdh" stays small and
+# installs nothing else.  The full data-handling client in mdh.py needs
+# the "full" extra below - see python/mdh.py.
+#
+dependencies = []
+
+[project.optional-dependencies]
+# pip install "mu2e-mdh[full]"  ->  everything mdh.MdhClient needs
+full = [
+    # Distribution names, not import names: metacat-client provides
+    # "metacat", datadispatcher-client provides "data_dispatcher", and
+    # rucio-clients provides "rucio".  The unsuffixed "metacat" and
+    # "datadispatcher" on PyPI are older separate uploads, and plain
+    # "rucio" on PyPI is the SERVER - none of those three are wanted.
+    #
+    # Pinned exactly, not floored.  These packages change their
+    # interfaces between releases, so the only versions mdh is known to
+    # work against are the ones the spack build uses.  Bump these in
+    # lockstep with the spack environment, never independently.
+    "metacat-client==4.1.3",
+    "rucio-clients==38.5.1",
+    "datadispatcher-client==2.0.3",
+    "requests==2.32.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Mu2e/mdh"
+Source = "https://github.com/Mu2e/mdh"
+
+[tool.setuptools]
+# Flat modules, kept where spack and ups already expect to find them.
+# When this becomes a proper package the key below becomes "packages".
+package-dir = { "" = "python" }
+py-modules = ["mdh_names", "mdh", "mdh_cli"]
+
+[project.scripts]
+# Same code path as bin/mdh, which the spack and ups builds install.
+# Note that a pip-installed "mdh" can shadow, or be shadowed by, the one
+# from spack, depending on PATH order.  The command needs the "full"
+# extra above; installed without it, it will fail on its first import.
+mdh = "mdh_cli:main"
