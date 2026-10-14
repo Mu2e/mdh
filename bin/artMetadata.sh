@@ -126,6 +126,7 @@ printf "\nend RunSubrunEvent\n"
 '
 
 if [ "$FILETYPE" != "mc" ]; then
+    rm -f $TMP
     exit 0
 fi
 
